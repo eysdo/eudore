@@ -21,6 +21,8 @@ type (
 )
 
 var _ eudore.Router = (*RouterDebug)(nil)
+
+// StaticHtml 定义ui文件的位置，默认是该文件同名称后缀为html
 var StaticHtml = ""
 
 // 获取文件定义位置，静态ui文件在同目录。
@@ -32,15 +34,14 @@ func init() {
 }
 
 // NewRouterDebug 函数创建一个debug路由器，默认封装RouterFull。
-func NewRouterDebug(i interface{}) (eudore.Router, error) {
-	r2, err := eudore.NewRouterFull(i)
+func NewRouterDebug() eudore.Router {
+	r2 := eudore.NewRouterFull()
 	r := &RouterDebug{
 		RouterCore: r2,
 		router:     r2,
 	}
 	r.RouterMethod = &eudore.RouterMethodStd{
-		RouterCore:          r,
-		ControllerParseFunc: eudore.ControllerBaseParseFunc,
+		RouterCore: r,
 	}
 	r.GetFunc("/eudore/debug/router/data", r.getData)
 	r.GetFunc("/eudore/debug/router/ui", func(ctx eudore.Context) {
@@ -50,7 +51,7 @@ func NewRouterDebug(i interface{}) (eudore.Router, error) {
 			ctx.WriteString("breaker not set ui file path.")
 		}
 	})
-	return r, err
+	return r
 }
 
 // RegisterHandler 实现eudore.RouterCore接口，记录全部路由路径。
@@ -61,10 +62,11 @@ func (r *RouterDebug) RegisterHandler(method, path string, hs eudore.HandlerFunc
 }
 
 func (r *RouterDebug) getData(ctx eudore.Context) {
-	ctx.WriteRender(r)
+	ctx.Render(r)
 }
 
 // Set 方法传递路由器的Set行为。
-func (r *RouterDebug) Set(key string, i interface{}) error {
-	return eudore.ComponentSet(r.router, key, i)
+func (r *RouterDebug) Set(key string, i interface{}) (err error) {
+	_, err = eudore.Set(r.router, key, i)
+	return
 }
