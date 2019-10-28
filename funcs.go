@@ -34,28 +34,30 @@ func init() {
 	// ConfigReadFunc
 	GlobalConfigReadFunc["default"] = ConfigReadFile
 	GlobalConfigReadFunc["file"] = ConfigReadFile
-	GlobalConfigReadFunc["https"] = ConfigReadHttp
-	GlobalConfigReadFunc["http"] = ConfigReadHttp
+	GlobalConfigReadFunc["https"] = ConfigReadHTTP
+	GlobalConfigReadFunc["http"] = ConfigReadHTTP
 }
 
 // ConfigParseRead 函数使用'keys.config'读取配置内容，并使用[]byte类型保存到'keys.configdata'。
 func ConfigParseRead(c Config) error {
-	path := GetString(c.Get("keys.config"))
-	if path == "" {
-		return nil //fmt.Errorf("config data is null")
+	errs := NewErrors()
+	for _, path := range GetArrayString(c.Get("keys.config")) {
+		// read protocol and get read func
+		s := strings.SplitN(path, "://", 2)
+		fn := GlobalConfigReadFunc[s[0]]
+		if fn == nil {
+			// use default read func
+			fn = GlobalConfigReadFunc["default"]
+		}
+		data, err := fn(path)
+		if err == nil {
+			c.Set("keys.configdata", data)
+			c.Set("keys.configpath", path)
+			return nil
+		}
+		errs.HandleError(err)
 	}
-	// read protocol
-	// get read func
-	s := strings.SplitN(path, "://", 2)
-	fn := GlobalConfigReadFunc[s[0]]
-	if fn == nil {
-		// use default read func
-		fmt.Println("undefined read config: " + path + ", use default file:// .")
-		fn = GlobalConfigReadFunc["default"]
-	}
-	data, err := fn(path)
-	c.Set("keys.configdata", data)
-	return err
+	return errs.GetError()
 }
 
 // ConfigParseConfig 函数获得'keys.configdata'的内容解析配置。
@@ -92,6 +94,8 @@ func ConfigParseEnvs(c Config) error {
 }
 
 // ConfigParseMods 函数从'enable'项获得使用的模式的数组字符串，从'mods.xxx'加载配置。
+//
+// 默认会加载OS mod,如果是docker环境下使用docker模式。
 func ConfigParseMods(c Config) error {
 	mod, ok := c.Get("enable").([]string)
 	if !ok {
@@ -105,17 +109,28 @@ func ConfigParseMods(c Config) error {
 			return nil
 		}
 	}
+	mod = append(mod, getOS())
 	for _, i := range mod {
 		ConvertTo(c.Get("mods."+i), c.Get(""))
 	}
 	return nil
 }
 
+func getOS() string {
+	// check docker
+	_, err := os.Stat("/.dockerenv")
+	if err == nil || !os.IsNotExist(err) {
+		return "docker"
+	}
+	// 返回默认OS
+	return runtime.GOOS
+}
+
 // ConfigParseHelp 函数测试配置内容，如果存在'keys.help'项会使用JSON标准化输出配置到标准输出。
 func ConfigParseHelp(c Config) error {
 	ok := c.Get("keys.help") != nil
 	if ok {
-		Json(c)
+		JSON(c)
 	}
 	return nil
 }
@@ -133,8 +148,8 @@ func ConfigReadFile(path string) ([]byte, error) {
 	return data, err
 }
 
-// ConfigReadHttp Send http request get config info
-func ConfigReadHttp(path string) ([]byte, error) {
+// ConfigReadHTTP Send http request get config info
+func ConfigReadHTTP(path string) ([]byte, error) {
 	resp, err := http.Get(path)
 	if err != nil {
 		return nil, err
@@ -164,7 +179,7 @@ func ConfigReadHttp(path string) ([]byte, error) {
 
 // InitSignal 函数定义初始化系统信号。
 func InitSignal(app *Eudore) error {
-	if runtime.GOOS == "windows" || GetStringBool(os.Getenv(ENV_EUDORE_DISABLE_SIGNAL)) {
+	if runtime.GOOS == "windows" || GetStringBool(os.Getenv(EnvEudoreDisableSignal)) {
 		return nil
 	}
 
@@ -224,6 +239,16 @@ func InitLoggerStd(app *Eudore) error {
 
 // InitStart 函数启动Eudore Server。
 func InitStart(app *Eudore) error {
+	// 更新context func，设置server处理者。
+	if fn, ok := app.Config.Get("keys.context").(PoolGetFunc); ok {
+		app.ContextPool.New = fn
+	}
+	if h, ok := app.Config.Get("keys.handler").(http.Handler); ok {
+		app.Server.SetHandler(h)
+	} else {
+		app.Server.SetHandler(app)
+	}
+
 	// 监听全部配置
 	lns, err := newServerListens(app.Config.Get("listeners"))
 	if err != nil {
@@ -237,18 +262,6 @@ func InitStart(app *Eudore) error {
 		}
 		app.AddListener(ln)
 	}
-
-	// 更新context func，设置server处理者。
-	if fn, ok := app.Config.Get("keys.context").(PoolGetFunc); ok {
-		app.ContextPool.New = fn
-	}
-	app.Server.AddHandler(app)
-
-	// 启动server。
-	go func() {
-		err := app.Server.Start()
-		app.HandleError(err)
-	}()
 	return nil
 }
 

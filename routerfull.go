@@ -43,7 +43,7 @@ type (
 	RouterFull struct {
 		RouterMethod
 		Print       func(...interface{}) `set:"print"`
-		middtree    *middNode
+		middlewares *trieNode
 		node404     fullNode
 		nodefunc404 HandlerFuncs
 		node405     fullNode
@@ -85,50 +85,36 @@ type (
 func NewRouterFull() Router {
 	r := &RouterFull{
 		Print:       func(...interface{}) {},
-		nodefunc404: HandlerFuncs{DefaultRouter404Func},
-		nodefunc405: HandlerFuncs{DefaultRouter405Func},
+		nodefunc404: HandlerFuncs{HandlerRouter404},
+		nodefunc405: HandlerFuncs{HandlerRouter405},
 		node404: fullNode{
 			tags:     []string{ParamRoute},
 			vals:     []string{"404"},
-			handlers: HandlerFuncs{DefaultRouter404Func},
+			handlers: HandlerFuncs{HandlerRouter404},
 		},
 		node405: fullNode{
 			Wchildren: &fullNode{
 				tags:     []string{ParamRoute},
 				vals:     []string{"405"},
-				handlers: HandlerFuncs{DefaultRouter405Func},
+				handlers: HandlerFuncs{HandlerRouter405},
 			},
 		},
-		middtree: &middNode{},
+		middlewares: newTrieNode(),
 	}
-	r.RouterMethod = &RouterMethodStd{
-		RouterCore: r,
-	}
+	r.RouterMethod = NewRouterMethodStd(r)
 	return r
 }
 
 // RegisterMiddleware method register the middleware into the middleware tree and append the handler if it exists.
 //
 // RegisterMiddleware 注册中间件到中间件树中，如果存在则追加处理者。
-func (r *RouterFull) RegisterMiddleware(method, path string, hs HandlerFuncs) {
-	// Correct the data: If the method is not empty, the path is empty and the modified path is '/'.
-	// 修正数据：如果方法非空，路径为空，修改路径为'/'。
-	if len(method) != 0 && len(path) == 0 {
-		path = "/"
-	}
-	r.Print("RegisterMiddleware:", method, path, hs)
-	if method == MethodAny {
-		if path == "/" {
-			r.middtree.Insert("", hs)
-			r.node404.handlers = append(r.middtree.val, r.nodefunc404...)
-			r.node405.Wchildren.handlers = append(r.middtree.val, r.nodefunc405...)
-			return
-		}
-		for _, method = range RouterAllMethod {
-			r.middtree.Insert(method+path, hs)
-		}
-	} else {
-		r.middtree.Insert(method+path, hs)
+func (r *RouterFull) RegisterMiddleware(path string, hs HandlerFuncs) {
+	r.Print("RegisterMiddleware:", path, hs)
+	path = strings.Split(path, " ")[0]
+	r.middlewares.Insert(path, hs)
+	if path == "" {
+		r.node404.handlers = append(r.middlewares.vals, r.nodefunc404...)
+		r.node405.Wchildren.handlers = append(r.middlewares.vals, r.nodefunc405...)
 	}
 }
 
@@ -144,16 +130,17 @@ func (r *RouterFull) RegisterHandler(method string, path string, handler Handler
 	switch method {
 	case "NotFound", "404":
 		r.nodefunc404 = handler
-		r.node404.handlers = CombineHandlerFuncs(handler, r.middtree.val)
+		r.node404.handlers = CombineHandlerFuncs(r.middlewares.vals, handler)
 	case "MethodNotAllowed", "405":
 		r.nodefunc405 = handler
-		r.node405.Wchildren.handlers = CombineHandlerFuncs(handler, r.middtree.val)
+		r.node405.Wchildren.handlers = CombineHandlerFuncs(r.middlewares.vals, handler)
 	case MethodAny:
+		handler = CombineHandlerFuncs(r.middlewares.Lookup(path), handler)
 		for _, method := range RouterAllMethod {
-			r.insertRoute(method, path, true, CombineHandlerFuncs(r.middtree.Lookup(method+path), handler))
+			r.insertRoute(method, path, true, handler)
 		}
 	default:
-		r.insertRoute(method, path, false, CombineHandlerFuncs(r.middtree.Lookup(method+path), handler))
+		r.insertRoute(method, path, false, CombineHandlerFuncs(r.middlewares.Lookup(path), handler))
 	}
 }
 
@@ -165,7 +152,7 @@ func (r *RouterFull) RegisterHandler(method string, path string, handler Handler
 //
 // 如果方法不支持则不会添加，请求改路径会响应405
 func (r *RouterFull) insertRoute(method, key string, isany bool, val HandlerFuncs) {
-	var currentNode *fullNode = r.getTree(method)
+	var currentNode = r.getTree(method)
 	if currentNode == &r.node405 {
 		return
 	}
@@ -181,6 +168,8 @@ func (r *RouterFull) insertRoute(method, key string, isany bool, val HandlerFunc
 			return
 		}
 		currentNode.kind |= fullNodeKindAnyMethod
+	} else {
+		currentNode.kind &^= fullNodeKindAnyMethod
 	}
 
 	currentNode.handlers = val
@@ -424,7 +413,7 @@ func (r *fullNode) SetTags(args []string) {
 // AddTagsToParams 将当前Node的tags给予Params
 func (r *fullNode) AddTagsToParams(p Params) {
 	for i := range r.tags {
-		p.AddParam(r.tags[i], r.vals[i])
+		p.Add(r.tags[i], r.vals[i])
 	}
 }
 
@@ -523,7 +512,7 @@ func (r *fullNode) recursiveLoopup(searchKey string, params Params) HandlerFuncs
 			for _, edgeObj := range r.Rchildren {
 				if edgeObj.check(currentKey) {
 					if n := edgeObj.recursiveLoopup(nextSearchKey, params); n != nil {
-						params.AddParam(edgeObj.name, currentKey)
+						params.Add(edgeObj.name, currentKey)
 						return n
 					}
 				}
@@ -533,7 +522,7 @@ func (r *fullNode) recursiveLoopup(searchKey string, params Params) HandlerFuncs
 			// 变量Node依次匹配是否满足
 			for _, edgeObj := range r.Pchildren {
 				if n := edgeObj.recursiveLoopup(nextSearchKey, params); n != nil {
-					params.AddParam(edgeObj.name, currentKey)
+					params.Add(edgeObj.name, currentKey)
 					return n
 				}
 			}
@@ -547,7 +536,7 @@ func (r *fullNode) recursiveLoopup(searchKey string, params Params) HandlerFuncs
 	for _, edgeObj := range r.Vchildren {
 		if edgeObj.check(searchKey) {
 			edgeObj.AddTagsToParams(params)
-			params.AddParam(edgeObj.name, searchKey)
+			params.Add(edgeObj.name, searchKey)
 			return edgeObj.handlers
 		}
 	}
@@ -556,7 +545,7 @@ func (r *fullNode) recursiveLoopup(searchKey string, params Params) HandlerFuncs
 	// 若当前Node有通配符处理方法直接匹配，返回结果。
 	if r.Wchildren != nil {
 		r.Wchildren.AddTagsToParams(params)
-		params.AddParam(r.Wchildren.name, searchKey)
+		params.Add(r.Wchildren.name, searchKey)
 		return r.Wchildren.handlers
 	}
 

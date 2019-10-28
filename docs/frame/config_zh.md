@@ -8,11 +8,11 @@ Config主要方法未Get/Set来读写数据，和ParseFuncs和Parse来解析数�
 type (
 	ConfigParseFunc func(Config) error
 	ConfigParseOption func([]ConfigParseFunc) []ConfigParseFunc
+	// Config 定义配置管理，使用配置读写和解析功能。
 	Config interface {
-		Component
 		Get(string) interface{}
 		Set(string, interface{}) error
-		ParseFuncs(ConfigParseOption)
+		ParseOption(ConfigParseOption)
 		Parse() error
 	}
 )
@@ -45,11 +45,7 @@ c.ParseFuncs(func(fn []ConfigParseFunc) []ConfigParseFunc{
 c.Parse()
 ```
 
-目前Config默认内置了七个解析函数，后续按顺序介绍。
-
-### ConfigParseInit
-
-作用未知，待删除。
+目前Config默认内置了六个解析函数，后续按顺序介绍。
 
 ### ConfigParseRead
 

@@ -3,7 +3,6 @@ package eudore
 import (
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"runtime"
 )
@@ -25,10 +24,13 @@ var (
 
 // init 函数初始化内置四种扩展的请求上下文处理函数。
 func init() {
+	RegisterHandlerFunc(NewNetHTTP1HandlerFunc)
+	RegisterHandlerFunc(NewNetHTTP2HandlerFunc)
 	RegisterHandlerFunc(NewContextErrorHanderFunc)
+	RegisterHandlerFunc(NewContextRenderHanderFunc)
 	RegisterHandlerFunc(NewContextRenderErrorHanderFunc)
 	RegisterHandlerFunc(NewContextDataHanderFunc)
-	RegisterHandlerFunc(NewRpcMapHandlerFunc)
+	RegisterHandlerFunc(NewRPCMapHandlerFunc)
 }
 
 // NewHandlerFuncs 函数根据参数返回一个HandlerFuncs。
@@ -83,7 +85,7 @@ func RegisterHandlerFunc(fn interface{}) {
 	if iType.Kind() != reflect.Func {
 		panic(ErrRegisterNewHandlerParamNotFunc)
 	}
-	if iType.NumIn() != 1 || iType.In(0).Kind() != reflect.Func {
+	if iType.NumIn() != 1 || (iType.In(0).Kind() != reflect.Func && iType.In(0).Kind() != reflect.Interface) {
 		panic(fmt.Errorf(ErrFormatRegisterHandlerFuncInputParamError, iType.String()))
 	}
 	if iType.NumOut() != 1 || iType.Out(0) != typeHandlerFunc {
@@ -164,12 +166,18 @@ func ListExtendHandlerFunc() []string {
 	return strs
 }
 
-// TestHttpHandler 函数是一个测试函数，使用http.Handler处理一个方法请求。
-func TestHttpHandler(h http.Handler, method, path string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(method, path, nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	return w
+// NewNetHTTP1HandlerFunc 方法转换处理func(http.ResponseWriter, *http.Request)类型。
+func NewNetHTTP1HandlerFunc(fn func(http.ResponseWriter, *http.Request)) HandlerFunc {
+	return func(ctx Context) {
+		fn(ctx.Response(), ctx.Request())
+	}
+}
+
+// NewNetHTTP2HandlerFunc 方法转换处理http.HandlerFunc类型。
+func NewNetHTTP2HandlerFunc(fn http.HandlerFunc) HandlerFunc {
+	return func(ctx Context) {
+		fn(ctx.Response(), ctx.Request())
+	}
 }
 
 // NewContextErrorHanderFunc 函数处理func(Context) error返回的error处理。
@@ -178,6 +186,19 @@ func NewContextErrorHanderFunc(fn func(Context) error) HandlerFunc {
 		err := fn(ctx)
 		if err != nil {
 			ctx.Fatal(err)
+		}
+	}
+}
+
+// NewContextRenderHanderFunc 函数处理func(Context) interface{}返回数据渲染。
+func NewContextRenderHanderFunc(fn func(Context) interface{}) HandlerFunc {
+	return func(ctx Context) {
+		data := fn(ctx)
+		if ctx.Response().Size() == 0 {
+			err := ctx.Render(data)
+			if err != nil {
+				ctx.Fatal(err)
+			}
 		}
 	}
 }
@@ -195,10 +216,10 @@ func NewContextRenderErrorHanderFunc(fn func(Context) (interface{}, error)) Hand
 	}
 }
 
-// NewRpcMapHandlerFunc 定义了固定请求和响应为map[string]interface{}类型的函数处理。
+// NewRPCMapHandlerFunc 定义了固定请求和响应为map[string]interface{}类型的函数处理。
 //
-// 是NewRpcHandlerFunc的一种子集，拥有类型限制，但是没有使用反射。
-func NewRpcMapHandlerFunc(fn func(Context, map[string]interface{}) (map[string]interface{}, error)) HandlerFunc {
+// 是NewRPCHandlerFunc的一种子集，拥有类型限制，但是没有使用反射。
+func NewRPCMapHandlerFunc(fn func(Context, map[string]interface{}) (map[string]interface{}, error)) HandlerFunc {
 	return func(ctx Context) {
 		req := make(map[string]interface{})
 		err := ctx.Bind(&req)
@@ -216,12 +237,12 @@ func NewRpcMapHandlerFunc(fn func(Context, map[string]interface{}) (map[string]i
 	}
 }
 
-// NewRpcHandlerFunc 函数需要传入一个函数，返回一个请求处理，通过反射来动态调用。
+// NewRPCHandlerFunc 函数需要传入一个函数，返回一个请求处理，通过反射来动态调用。
 //
 // 函数形式： func(Context, Request) (Response, error)
 //
 // Request和Response的类型可以为map或结构体或者结构体的指针，4个参数需要全部存在，但是不可调换顺序。
-func NewRpcHandlerFunc(fn interface{}) HandlerFunc {
+func NewRPCHandlerFunc(fn interface{}) HandlerFunc {
 	iType := reflect.TypeOf(fn)
 	iValue := reflect.ValueOf(fn)
 	if iType.Kind() != reflect.Func {

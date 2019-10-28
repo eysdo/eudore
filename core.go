@@ -6,16 +6,17 @@ Core的特点是简单。
 */
 
 import (
-	"context"
+	"net"
+	"net/http"
+	"sync"
 	"time"
-
-	"github.com/eudore/eudore/protocol"
 )
 
 type (
 	// Core 定义Core对象，是App对象的一种实例化。
 	Core struct {
 		*App
+		wg sync.WaitGroup
 	}
 )
 
@@ -24,7 +25,7 @@ func NewCore() *Core {
 	return &Core{App: NewApp()}
 }
 
-// Run 加载配置然后启动Core。
+// Run 方法初始化日志输出然后启动Core，Config需要手动调用Parse方法。
 func (app *Core) Run() (err error) {
 	go func(app *App) {
 		ticker := time.NewTicker(time.Millisecond * 40)
@@ -37,13 +38,16 @@ func (app *Core) Run() (err error) {
 	if initlog, ok := app.Logger.(LoggerInitHandler); ok {
 		app.Logger, _ = NewLoggerStd(nil)
 		initlog.NextHandler(app.Logger)
+		Set(app.Router, "print", NewLoggerPrintFunc(app.Logger))
+		Set(app.Server, "print", NewLoggerPrintFunc(app.Logger))
 	}
 
-	app.Server.AddHandler(app)
-	return app.Server.Start()
+	app.Server.SetHandler(app)
+	app.wg.Wait()
+	return nil
 }
 
-// Listen 监听一个http端口
+// Listen 方法监听一个http端口
 func (app *Core) Listen(addr string) {
 	conf := ServerListenConfig{
 		Addr: addr,
@@ -54,15 +58,16 @@ func (app *Core) Listen(addr string) {
 		return
 	}
 	app.Logger.Infof("listen %s %s", ln.Addr().Network(), ln.Addr().String())
-	app.Server.AddListener(ln)
+	app.wg.Add(1)
+	go app.Serve(ln)
 }
 
-// ListenTLS 监听一个https端口，如果支持默认开启h2
+// ListenTLS 方法监听一个https端口，如果支持默认开启h2
 func (app *Core) ListenTLS(addr, key, cert string) {
 	conf := ServerListenConfig{
 		Addr:     addr,
-		Https:    true,
-		Http2:    true,
+		HTTPS:    true,
+		HTTP2:    true,
 		Keyfile:  key,
 		Certfile: cert,
 	}
@@ -72,18 +77,33 @@ func (app *Core) ListenTLS(addr, key, cert string) {
 		return
 	}
 	app.Logger.Infof("listen %s %s", ln.Addr().Network(), ln.Addr().String())
-	app.Server.AddListener(ln)
+	app.wg.Add(1)
+	go app.Serve(ln)
 }
 
-// EudoreHTTP 方法实现protocol.HandlerHttp接口，处理http请求。
-func (app *Core) EudoreHTTP(pctx context.Context, w protocol.ResponseWriter, req protocol.RequestReader) {
+// Serve 方法阻塞启动一个监听服务。
+func (app *Core) Serve(ln net.Listener) error {
+	err := app.Server.Serve(ln)
+	if err != nil {
+		app.Error(err)
+	}
+	app.wg.Done()
+	return err
+}
+
+// ServeHTTP 方法实现http.Handler接口，处理http请求。
+func (app *Core) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// init
 	ctx := app.ContextPool.Get().(Context)
+	response := responseWriterHTTPPool.Get().(*ResponseWriterHTTP)
 	// handle
-	ctx.Reset(pctx, w, req)
-	ctx.SetHandler(app.Router.Match(ctx.Method(), ctx.Path(), ctx))
+	response.Reset(w)
+	ctx.Reset(r.Context(), response, r)
+	ctx.SetHandler(app.Router.Match(ctx.Method(), ctx.Path(), ctx.Params()))
 	ctx.Next()
 	ctx.End()
 	// release
+	responseWriterHTTPPool.Put(response)
 	app.ContextPool.Put(ctx)
+
 }

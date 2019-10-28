@@ -65,10 +65,10 @@ func MatchStar(obj, patten string) bool {
 	return true
 }
 
-// Json test function, json formatted output args.
+// JSON test function, json formatted output args.
 //
-// Json 测试函数，json格式化输出args。
-func Json(args ...interface{}) {
+// JSON 测试函数，json格式化输出args,不保证可靠性，框架完全稳定后删除。
+func JSON(args ...interface{}) {
 	indent, err := json.MarshalIndent(&args, "", "\t")
 	fmt.Println(string(indent), err)
 }
@@ -99,6 +99,9 @@ func GetDefaultInt(i interface{}, n int) int {
 	if v, ok := i.(int); ok {
 		return v
 	}
+	if v, ok := i.(int64); ok {
+		return int(v)
+	}
 	if v, err := strconv.Atoi(GetDefaultString(i, "")); err == nil {
 		return v
 	}
@@ -114,6 +117,9 @@ func GetInt64(i interface{}) int64 {
 func GetDefaultInt64(i interface{}, n int64) int64 {
 	if v, ok := i.(int64); ok {
 		return v
+	}
+	if v, ok := i.(int); ok {
+		return int64(v)
 	}
 	if v, err := strconv.ParseInt(GetDefaultString(i, ""), 10, 64); err == nil {
 		return v
@@ -199,6 +205,27 @@ func GetDefaultString(i interface{}, str string) string {
 		return v
 	}
 	return str
+}
+
+// GetArrayString 转换成[]string
+func GetArrayString(i interface{}) []string {
+	str, ok := i.(string)
+	if ok {
+		return []string{str}
+	}
+	strs, ok := i.([]string)
+	if ok {
+		return strs
+	}
+	is, ok := i.([]interface{})
+	if ok {
+		strs = make([]string, len(is))
+		for i := range is {
+			strs[i] = fmt.Sprint(is[i])
+		}
+		return strs
+	}
+	return nil
 }
 
 // GetStringBool 使用GetStringDefaultBool，默认false。
@@ -340,6 +367,11 @@ func (m StringMap) Del(key string) {
 // GetInt 方法获取对应的值并转换成int。
 func (m StringMap) GetInt(key string) int {
 	return GetInt(m.Get(key))
+}
+
+// GetInt64 方法获取对应的值并转换成int。
+func (m StringMap) GetInt64(key string) int64 {
+	return GetInt64(m.Get(key))
 }
 
 // GetDefultInt 方法获取对应的值并转换成int,如果无法转换返回默认值。

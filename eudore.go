@@ -8,13 +8,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sort"
 	"sync"
 	"time"
-
-	"github.com/eudore/eudore/protocol"
 )
 
 type (
@@ -49,6 +48,7 @@ func NewEudore(options ...interface{}) *Eudore {
 		signalFuncs: make(map[os.Signal][]EudoreFunc),
 	}
 	app.Context, app.cancel = context.WithCancel(app.Context)
+	app.Context = context.WithValue(app.Context, AppContextKey, app)
 	app.handlers = HandlerFuncs{app.HandleContext}
 
 	// init options
@@ -113,7 +113,12 @@ func (app *Eudore) Start() error {
 	go app.InitAll()
 	<-app.Done()
 
-	time.Sleep(200 * time.Millisecond)
+	// 处理后续日志
+	if initlog, ok := app.Logger.(LoggerInitHandler); ok {
+		app.Logger, _ = NewLoggerStd(nil)
+		initlog.NextHandler(app.Logger)
+	}
+	time.Sleep(100 * time.Millisecond)
 	app.Logger.Sync()
 	time.Sleep(50 * time.Millisecond)
 	return app.Err()
@@ -145,7 +150,6 @@ func (app *Eudore) Init(names ...string) (err error) {
 		err = app.inits[name].fn(app)
 		if err != nil {
 			if err == ErrEudoreIgnoreInit {
-
 				app.Logger.Errorf("eudore init %d/%d %s ignore the remaining init function.", i+1, num, name)
 				return nil
 			}
@@ -210,21 +214,13 @@ func (app *Eudore) getInitNames(names []string) []string {
 func (app *Eudore) Restart() error {
 	app.mu.Lock()
 	defer app.mu.Unlock()
-	err := StartNewProcess(app.listeners)
+	err := startNewProcess(app.listeners)
 	if err == nil {
 		app.Logger.Info("eudore restart success.")
 		app.Server.Shutdown(context.Background())
 		app.HandleError(ErrApplicationStop)
 	}
 	return err
-}
-
-// Close 方法关闭app。
-func (app *Eudore) Close() error {
-	app.mu.Lock()
-	defer app.mu.Unlock()
-	defer app.HandleError(ErrApplicationStop)
-	return app.Server.Close()
 }
 
 // Shutdown 方法正常退出关闭app。
@@ -314,8 +310,8 @@ func (app *Eudore) Listen(addr string) {
 func (app *Eudore) ListenTLS(addr, key, cert string) {
 	conf := ServerListenConfig{
 		Addr:     addr,
-		Https:    true,
-		Http2:    true,
+		HTTPS:    true,
+		HTTP2:    true,
 		Keyfile:  key,
 		Certfile: cert,
 	}
@@ -331,7 +327,9 @@ func (app *Eudore) ListenTLS(addr, key, cert string) {
 func (app *Eudore) AddListener(ln net.Listener) {
 	app.Logger.Infof("listen %s %s", ln.Addr().Network(), ln.Addr().String())
 	app.listeners = append(app.listeners, ln)
-	app.Server.AddListener(ln)
+	go func() {
+		app.HandleError(app.Server.Serve(ln))
+	}()
 }
 
 // AddStatic method register a static file Handle.
@@ -349,21 +347,23 @@ func (app *Eudore) AddGlobalMiddleware(hs ...HandlerFunc) {
 
 // HandleContext 实现处理请求上下文函数。
 func (app *Eudore) HandleContext(ctx Context) {
-	ctx.SetHandler(app.Router.Match(ctx.Method(), ctx.Path(), ctx))
+	ctx.SetHandler(app.Router.Match(ctx.Method(), ctx.Path(), ctx.Params()))
 	ctx.Next()
-	ctx.End()
 }
 
-// EudoreHTTP 方法处理一个http请求。
-func (app *Eudore) EudoreHTTP(pctx context.Context, w protocol.ResponseWriter, req protocol.RequestReader) {
+// ServeHTTP 实现http.Handler接口，处理http请求。
+func (app *Eudore) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// init
 	ctx := app.ContextPool.Get().(Context)
+	response := responseWriterHTTPPool.Get().(*ResponseWriterHTTP)
 	// handle
-	ctx.Reset(pctx, w, req)
+	response.Reset(w)
+	ctx.Reset(r.Context(), response, r)
 	ctx.SetHandler(app.handlers)
 	ctx.Next()
 	ctx.End()
 	// release
+	responseWriterHTTPPool.Put(response)
 	app.ContextPool.Put(ctx)
 }
 
@@ -387,28 +387,42 @@ func (app *Eudore) Error(args ...interface{}) {
 	app.logReset().Error(args...)
 }
 
+// Fatal 方法输出Fatal级别日志。
+func (app *Eudore) Fatal(args ...interface{}) {
+	app.logReset().Fatal(args...)
+	time.Sleep(90 * time.Millisecond)
+	panic(fmt.Sprintln(args...))
+}
+
 // Debugf 方法输出Debug级别日志。
 func (app *Eudore) Debugf(format string, args ...interface{}) {
-	app.logReset().Debug(fmt.Sprintf(format, args...))
+	app.logReset().Debugf(format, args...)
 }
 
 // Infof 方法输出Info级别日志。
 func (app *Eudore) Infof(format string, args ...interface{}) {
-	app.logReset().Info(fmt.Sprintf(format, args...))
+	app.logReset().Infof(format, args...)
 }
 
 // Warningf 方法输出Warning级别日志。
 func (app *Eudore) Warningf(format string, args ...interface{}) {
-	app.logReset().Warning(fmt.Sprintf(format, args...))
+	app.logReset().Warningf(format, args...)
 }
 
 // Errorf 方法输出Error级别日志。
 func (app *Eudore) Errorf(format string, args ...interface{}) {
-	app.logReset().Error(fmt.Sprintf(format, args...))
+	app.logReset().Errorf(format, args...)
+}
+
+// Fatalf 方法输出Error级别日志。
+func (app *Eudore) Fatalf(format string, args ...interface{}) {
+	app.logReset().Errorf(format, args...)
+	time.Sleep(90 * time.Millisecond)
+	panic(fmt.Sprintf(format, args...))
 }
 
 func (app *Eudore) logReset() Logout {
-	file, line := LogFormatFileLine(0)
+	file, line := logFormatFileLine(0)
 	f := Fields{
 		"file": file,
 		"line": line,
