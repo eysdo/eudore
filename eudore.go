@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"sort"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type (
 	// Eudore 定义Eudore App对象。
 	Eudore struct {
 		*App
+		GetWarp
 		cancel      context.CancelFunc
 		err         error
 		mu          sync.Mutex
@@ -47,13 +49,32 @@ func NewEudore(options ...interface{}) *Eudore {
 		signalChan:  make(chan os.Signal),
 		signalFuncs: make(map[os.Signal][]EudoreFunc),
 	}
+	app.initOptions(options...)
+	app.GetWarp = NewGetWarpWithApp(app.App)
 	app.Context, app.cancel = context.WithCancel(app.Context)
 	app.Context = context.WithValue(app.Context, AppContextKey, app)
 	app.handlers = HandlerFuncs{app.HandleContext}
 
+	Set(app.Config, "print", NewPrintFunc(app.App))
+	Set(app.Router, "print", NewPrintFunc(app.App))
+	Set(app.Server, "print", NewPrintFunc(app.App))
+
+	// Register eudore default reload func
+	app.RegisterInit("eudore-config", 0x003, InitConfig)
+	app.RegisterInit("eudore-workdir", 0x006, InitWorkdir)
+	app.RegisterInit("eudore-logger", 0x009, InitLoggerStd)
+	app.RegisterInit("eudore-signal", 0x00c, InitSignal)
+	app.RegisterInit("eudore-start", 0xff0, InitStart)
+	go app.handlerChannel()
+	return app
+}
+
+func (app *Eudore) initOptions(options ...interface{}) {
 	// init options
 	for _, i := range options {
 		switch val := i.(type) {
+		case context.Context:
+			app.Context = val
 		case Config:
 			app.Config = val
 		case Logger:
@@ -75,41 +96,25 @@ func NewEudore(options ...interface{}) *Eudore {
 
 		}
 	}
-	Set(app.Router, "print", NewLoggerPrintFunc(app.Logger))
-	Set(app.Server, "print", NewLoggerPrintFunc(app.Logger))
+}
 
-	// Register eudore default reload func
-	app.RegisterInit("eudore-config", 0x003, InitConfig)
-	app.RegisterInit("eudore-workdir", 0x006, InitWorkdir)
-	app.RegisterInit("eudore-logger", 0x009, InitLoggerStd)
-	app.RegisterInit("eudore-signal", 0x00c, InitSignal)
-	app.RegisterInit("eudore-start", 0xff0, InitStart)
-	go func(app *Eudore) {
-		ticker := time.NewTicker(time.Millisecond * 40)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-app.Done():
-				return
-			case sig := <-app.signalChan:
-				app.HandleSignal(sig)
-			case <-ticker.C:
-				app.Logger.Sync()
-			}
+func (app *Eudore) handlerChannel() {
+	ticker := time.NewTicker(time.Millisecond * 40)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-app.Done():
+			return
+		case sig := <-app.signalChan:
+			app.HandleSignal(sig)
+		case <-ticker.C:
+			app.Logger.Sync()
 		}
-	}(app)
-	return app
+	}
 }
 
-// Run method parse the current command, if the command is 'start', start eudore.
-//
-// Run 解析当前命令，如果命令是启动，则启动eudore。
+// Run 方法加载配置，然后启动全部初始化函数，等待App结束。
 func (app *Eudore) Run() error {
-	return app.Start()
-}
-
-// Start 方法加载配置，然后启动全部初始化函数，等待App结束。
-func (app *Eudore) Start() error {
 	go app.InitAll()
 	<-app.Done()
 
@@ -163,7 +168,7 @@ func (app *Eudore) Init(names ...string) (err error) {
 // getInitNames 处理名称并对reloads排序。
 func (app *Eudore) getInitNames(names []string) []string {
 	// get not names
-	notnames := eachstring(names, func(name string) string {
+	notnames := stringeach(names, func(name string) string {
 		if len(name) > 0 && name[0] == '!' {
 			return name[1:]
 		}
@@ -171,7 +176,7 @@ func (app *Eudore) getInitNames(names []string) []string {
 	})
 
 	// get names
-	names = eachstring(names, func(name string) string {
+	names = stringeach(names, func(name string) string {
 		if len(name) == 0 || name[0] == '!' {
 			return ""
 		}
@@ -187,7 +192,7 @@ func (app *Eudore) getInitNames(names []string) []string {
 	}
 
 	// filter
-	names = eachstring(names, func(name string) string {
+	names = stringeach(names, func(name string) string {
 		// filter not name
 		for _, i := range notnames {
 			if i == name {
@@ -294,20 +299,21 @@ func (app *Eudore) Err() error {
 }
 
 // Listen 监听一个http端口
-func (app *Eudore) Listen(addr string) {
+func (app *Eudore) Listen(addr string) error {
 	conf := ServerListenConfig{
 		Addr: addr,
 	}
 	ln, err := conf.Listen()
 	if err != nil {
 		app.Error(err)
-		return
+		return err
 	}
 	app.AddListener(ln)
+	return nil
 }
 
 // ListenTLS 监听一个https端口，如果支持默认开启h2
-func (app *Eudore) ListenTLS(addr, key, cert string) {
+func (app *Eudore) ListenTLS(addr, key, cert string) error {
 	conf := ServerListenConfig{
 		Addr:     addr,
 		HTTPS:    true,
@@ -318,9 +324,10 @@ func (app *Eudore) ListenTLS(addr, key, cert string) {
 	ln, err := conf.Listen()
 	if err != nil {
 		app.Error(err)
-		return
+		return err
 	}
 	app.AddListener(ln)
+	return nil
 }
 
 // AddListener 方式给Server添加一个net.Listener,同时会记录net.Listener对象，用于热重启传递fd。
@@ -333,16 +340,23 @@ func (app *Eudore) AddListener(ln net.Listener) {
 }
 
 // AddStatic method register a static file Handle.
-func (app *Eudore) AddStatic(path, dir string) {
-	app.Router.GetFunc(path, func(ctx Context) {
-		ctx.WriteFile(dir + ctx.Path())
+func (app *Eudore) AddStatic(route, dir string) {
+	if dir == "" {
+		dir = "."
+	}
+	app.Router.GetFunc(route, func(ctx Context) {
+		upath := ctx.GetParam("path")
+		if upath == "" {
+			upath = ctx.Path()
+		}
+		ctx.WriteFile(path.Join(dir, path.Clean("/"+upath)))
 	})
 }
 
 // AddGlobalMiddleware 给eudore添加全局中间件，会在Router.Match前执行。
 func (app *Eudore) AddGlobalMiddleware(hs ...HandlerFunc) {
-	app.handlers = CombineHandlerFuncs(app.handlers[0:len(app.handlers)-1], hs)
-	app.handlers = CombineHandlerFuncs(app.handlers, HandlerFuncs{app.HandleContext})
+	app.handlers = HandlerFuncsCombine(app.handlers[0:len(app.handlers)-1], hs)
+	app.handlers = HandlerFuncsCombine(app.handlers, HandlerFuncs{app.HandleContext})
 }
 
 // HandleContext 实现处理请求上下文函数。
@@ -422,7 +436,7 @@ func (app *Eudore) Fatalf(format string, args ...interface{}) {
 }
 
 func (app *Eudore) logReset() Logout {
-	file, line := logFormatFileLine(0)
+	file, line := logFormatFileLine(3)
 	f := Fields{
 		"file": file,
 		"line": line,
