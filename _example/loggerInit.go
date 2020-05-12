@@ -13,18 +13,14 @@ import (
 )
 
 func main() {
-	app := eudore.NewCore()
+	app := eudore.NewApp(eudore.NewLoggerInit())
+	app.Debug(0)
 	app.Info(1)
+	app.Sync()
 	app.Info(2)
 	app.Info(3)
 	app.AnyFunc("/*path", eudore.HandlerEmpty)
-
-	// 判断是LoggerInit
-	if initlog, ok := app.Logger.(eudore.LoggerInitHandler); ok {
-		// 创建日志
-		app.Logger, _ = eudore.NewLoggerStd(nil)
-		// 新日志处理LoggerInit保存的日志。
-		initlog.NextHandler(app.Logger)
-	}
-	app.Logger.Sync()
+	app.Options(eudore.NewLoggerStd(nil))
+	app.CancelFunc()
+	app.Run()
 }

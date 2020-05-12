@@ -7,9 +7,9 @@ import (
 )
 
 func main() {
-	app := eudore.NewCore()
+	app := eudore.NewApp()
 	app.AddMiddleware(middleware.NewRateFunc(app, 1, 3))
-	app.AnyFunc("/*", "hello")
+	app.AnyFunc("/*", eudore.HandlerEmpty)
 
 	client := httptest.NewClient(app)
 	client.NewRequest("PUT", "/file/data/2").Do().CheckStatus(200)
@@ -20,8 +20,7 @@ func main() {
 	for client.Next() {
 		app.Error(client.Error())
 	}
-	client.Stop(0)
 
-	app.Listen(":8088")
+	app.CancelFunc()
 	app.Run()
 }

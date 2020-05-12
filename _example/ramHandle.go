@@ -13,8 +13,8 @@ import (
 
 	"github.com/eudore/eudore"
 	"github.com/eudore/eudore/component/httptest"
+	"github.com/eudore/eudore/component/ram"
 	"github.com/eudore/eudore/middleware"
-	"github.com/eudore/eudore/middleware/ram"
 )
 
 func main() {
@@ -34,8 +34,8 @@ func main() {
 	acl.BindAllowPermission(2, 5)
 	acl.BindAllowPermission(2, 6)
 
-	app := eudore.NewCore()
-	app.AddMiddleware(middleware.NewLoggerFunc(app.App, "route"))
+	app := eudore.NewApp()
+	app.AddMiddleware(middleware.NewLoggerFunc(app, "route"))
 	// 测试给予参数 UID=2  即用户id为2，实际应由jwt、seession、token、cookie等方法计算得到UID。
 	app.AddMiddleware(func(ctx eudore.Context) {
 		ctx.SetParam(eudore.ParamUID, "2")
@@ -54,9 +54,9 @@ func main() {
 		}
 	})
 	for _, i := range []int{1, 2, 3, 4, 5, 6} {
-		app.AnyFunc(fmt.Sprintf("/%d", i), fmt.Sprintf("hello %d", i))
+		app.AnyFunc(fmt.Sprintf("/%d", i), eudore.HandlerEmpty)
 	}
-	app.AnyFunc("/*", "hello")
+	app.AnyFunc("/*", eudore.HandlerEmpty)
 
 	client := httptest.NewClient(app)
 	client.NewRequest("PUT", "/1").Do().CheckStatus(200)
@@ -68,8 +68,7 @@ func main() {
 	for client.Next() {
 		app.Error(client.Error())
 	}
-	client.Stop(0)
 
-	app.Listen(":8088")
+	app.CancelFunc()
 	app.Run()
 }

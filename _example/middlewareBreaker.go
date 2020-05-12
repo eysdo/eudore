@@ -7,16 +7,26 @@ import (
 )
 
 func main() {
-	app := eudore.NewCore()
-	httptest.NewClient(app).Stop(0)
-
+	app := eudore.NewApp()
 	// 创建熔断器并注入管理路由
-	cb := middleware.NewCircuitBreaker()
-	cb.InjectRoutes(app.Group("/eudore/debug/breaker"))
-	app.AddMiddleware(cb.Handle)
-
+	app.AddMiddleware(middleware.NewLoggerFunc(app, "route"))
+	app.AddMiddleware(middleware.NewCircuitBreaker(app.Group("/eudore/debug/breaker")).NewBreakFunc())
 	app.GetFunc("/*", echo)
-	app.Listen(":8088")
+
+	client := httptest.NewClient(app)
+	// 错误请求
+	for i := 0; i < 15; i++ {
+		client.NewRequest("GET", "/1?a=1").Do()
+	}
+	// 除非熔断后访问
+	for i := 0; i < 5; i++ {
+		client.NewRequest("GET", "/1").Do()
+	}
+	for client.Next() {
+		app.Error(client.Error())
+	}
+
+	app.CancelFunc()
 	app.Run()
 }
 

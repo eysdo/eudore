@@ -11,21 +11,20 @@ import (
 )
 
 func main() {
-	app := eudore.NewCore()
-	app.AddMiddleware(middleware.NewLoggerFunc(app.App, "action", "ram", "route", "resource", "browser"))
+	app := eudore.NewApp()
+	app.AddMiddleware(middleware.NewLoggerFunc(app, "action", "ram", "route", "resource", "browser"))
+	app.AnyFunc("/*", func(ctx eudore.Context) {})
+	app.Listen(":8088")
 
 	// 请求测试
 	client := httptest.NewClient(app)
-	client.NewRequest("GET", "/get").Do().CheckStatus(200).CheckBodyContainString("get", "/*path")
-	client.NewRequest("GET", "/get/ha").Do().CheckStatus(200).CheckBodyContainString("/get/:name")
-	client.NewRequest("GET", "/get/eudore").Do().CheckStatus(200).CheckBodyContainString("/get/eudore")
-	client.NewRequest("PUT", "/get/eudore").Do().CheckStatus(200).CheckBodyContainString("any", "/*path")
+	client.NewRequest("GET", "/get").Do().CheckStatus(404)
+	client.NewRequest("GET", "127.0.0.1:8080").Do().CheckStatus(500)
+	client.NewRequest("GET", "http://127.0.0.1:8088").Do().CheckStatus(200).Out()
 	for client.Next() {
 		app.Error(client.Error())
 	}
-	client.Stop(0)
 
-	// 启动server
-	app.Listen(":8088")
+	app.CancelFunc()
 	app.Run()
 }

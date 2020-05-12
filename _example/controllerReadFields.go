@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	app := eudore.NewCore()
+	app := eudore.NewApp()
 	app.AddController(&myFieldsController{
 		Name: "eudore",
 		Num:  10,
@@ -21,16 +21,15 @@ func main() {
 	})
 
 	client := httptest.NewClient(app)
-	client.NewRequest("GET", "/mybase/").Do().CheckStatus(200).Out()
-	client.NewRequest("GET", "/mybase/num").Do().CheckStatus(200).Out()
-	client.NewRequest("GET", "/mybase/name").Do().CheckStatus(200).Out()
+	client.NewRequest("GET", "/myfields/").Do().CheckStatus(200).Out()
+	client.NewRequest("GET", "/myfields/num").Do().CheckStatus(200).Out()
+	client.NewRequest("GET", "/myfields/name").Do().CheckStatus(200).Out()
 	client.NewRequest("GET", "/file/data/2").Do().CheckStatus(200).Out()
 	for client.Next() {
 		app.Error(client.Error())
 	}
-	client.Stop(0)
 
-	app.Listen(":8088")
+	app.CancelFunc()
 	app.Run()
 }
 

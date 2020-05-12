@@ -7,7 +7,6 @@ package main
 import (
 	"fmt"
 	"github.com/eudore/eudore"
-	"github.com/eudore/eudore/component/httptest"
 )
 
 type (
@@ -17,11 +16,9 @@ type (
 )
 
 func main() {
-	app := eudore.NewCore()
-	httptest.NewClient(app).Stop(0)
+	app := eudore.NewApp()
 	app.AddController(new(myParamsController))
-
-	app.Listen(":8088")
+	app.CancelFunc()
 	app.Run()
 }
 

@@ -9,12 +9,10 @@ package main
 
 import (
 	"github.com/eudore/eudore"
-	"github.com/eudore/eudore/component/httptest"
 )
 
 func main() {
-	app := eudore.NewCore()
-	httptest.NewClient(app).Stop(0)
+	app := eudore.NewApp()
 	app.Set("int", 20)
 	app.Set("string", "app set string")
 	app.Set("bool", true)
@@ -29,5 +27,12 @@ func main() {
 	app.Debugf("%#v", app.Get("struct"))
 	app.Debugf("%#v", app.Get("ptr"))
 	app.Debugf("%#v", app.Get(""))
+
+	app.Set("", map[string]interface{}{
+		"nil data": nil,
+	})
+	app.Debugf("%#v", app.Get(""))
+
+	app.CancelFunc()
 	app.Run()
 }

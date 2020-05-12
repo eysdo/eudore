@@ -11,15 +11,26 @@ import (
 	"github.com/eudore/eudore/component/httptest"
 )
 
+type renderData struct {
+	Name    string `xml:"name" json:"name"`
+	Message string `xml:"message" json:"message"`
+}
+
 func main() {
-	app := eudore.NewCore()
-	httptest.NewClient(app).Stop(0)
-	app.AnyFunc("/*path", func(ctx eudore.Context) {
-		ctx.Render(map[string]interface{}{
-			"name":    "eudore",
-			"message": "hello eudore",
-		})
+	app := eudore.NewApp()
+	app.AnyFunc("/*path", func(ctx eudore.Context) interface{} {
+		return renderData{
+			Name:    "eudore",
+			Message: "hello eudore",
+		}
 	})
-	app.Listen(":8088")
+
+	client := httptest.NewClient(app)
+	client.NewRequest("GET", "/1").WithHeaderValue("Accept", "application/json").Do().Out()
+	client.NewRequest("GET", "/1").WithHeaderValue("Accept", "application/xml").Do().Out()
+	client.NewRequest("GET", "/1").WithHeaderValue("Accept", eudore.MimeTextHTML).Do().Out()
+	client.NewRequest("GET", "/1").WithHeaderValue("Accept", eudore.MimeTextPlain).Do().Out()
+
+	app.CancelFunc()
 	app.Run()
 }

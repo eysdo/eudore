@@ -1,8 +1,10 @@
 package httptest
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"strings"
@@ -12,7 +14,7 @@ type (
 	// ResponseWriterTest is an implementation of protocol.ResponseWriter that
 	// records its mutations for later inspection in tests.
 	ResponseWriterTest struct {
-		client  *Client
+		Client  *Client
 		Request *RequestReaderTest
 
 		// Code is the HTTP response code set by WriteHeader.
@@ -47,7 +49,7 @@ type (
 // NewResponseWriterTest 方法返回一个测试使用的响应写入对象*ResponseWriterTest。
 func NewResponseWriterTest(client *Client, req *RequestReaderTest) *ResponseWriterTest {
 	return &ResponseWriterTest{
-		client:    client,
+		Client:    client,
 		Request:   req,
 		HeaderMap: make(http.Header),
 		Body:      new(bytes.Buffer),
@@ -146,14 +148,22 @@ func (rw *ResponseWriterTest) Flush() {
 	rw.Flushed = true
 }
 
-// Hijack 方法返回劫持的连接，该方法始终返回空连接和不支持该方法的错误。
-func (rw *ResponseWriterTest) Hijack() (net.Conn, error) {
-	return nil, ErrResponseWriterTestNotSupportHijack
-}
-
-// Push 方法实现http2 push操作，改方法始终为空操作。
-func (rw *ResponseWriterTest) Push(string, *http.PushOptions) error {
-	return nil
+// Hijack 方法返回劫持的连接。
+func (rw *ResponseWriterTest) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if rw.Request.websocketServer != nil {
+		go func() {
+			resp, err := http.ReadResponse(bufio.NewReader(rw.Request.websocketClient), rw.Request.Request)
+			if err != nil {
+				rw.Request.websocketClient.Close()
+				rw.Request.Error(err)
+				return
+			}
+			rw.HandleRespone(resp)
+			rw.Request.websocketHandle(rw.Request.websocketClient)
+		}()
+		return rw.Request.websocketServer, bufio.NewReadWriter(bufio.NewReader(rw.Request.websocketServer), bufio.NewWriter(rw.Request.websocketServer)), nil
+	}
+	return nil, nil, ErrResponseWriterTestNotSupportHijack
 }
 
 // Size 方法返回写入的body的长度。
@@ -166,22 +176,27 @@ func (rw *ResponseWriterTest) Status() int {
 	return rw.Code
 }
 
-// Errorf 方法输出错误学习。
-func (rw *ResponseWriterTest) Errorf(format string, args ...interface{}) {
-	err := fmt.Errorf(format, args...)
-	err = fmt.Errorf("httptest request %s %s of file location %s:%d, error: %v", rw.Request.Method, rw.Request.RequestURI, rw.Request.File, rw.Request.Line, err)
-	rw.client.Errs = append(rw.client.Errs, err)
+// HandleRespone 方法处理一个http.Response对象数据。
+func (rw *ResponseWriterTest) HandleRespone(resp *http.Response) *ResponseWriterTest {
+	rw.Code = resp.StatusCode
+	rw.HeaderMap = resp.Header
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		rw.Request.Error(err)
+		return rw
+	}
+	rw.Body = bytes.NewBuffer(body)
+	return rw
 }
 
 // CheckStatus 方法检查状态码。
 func (rw *ResponseWriterTest) CheckStatus(status ...int) *ResponseWriterTest {
 	for _, i := range status {
 		if i == rw.Code {
-			// fmt.Printf("response status succeeds. status is %d", rw.Code)
 			return rw
 		}
 	}
-	rw.Errorf("CheckStatus response status is invalid %d,check status: %v", rw.Code, status)
+	rw.Request.Errorf("CheckStatus response status is invalid %d,check status: %v", rw.Code, status)
 	return rw
 }
 
@@ -189,7 +204,7 @@ func (rw *ResponseWriterTest) CheckStatus(status ...int) *ResponseWriterTest {
 func (rw *ResponseWriterTest) CheckHeader(h ...string) *ResponseWriterTest {
 	for i := 0; i < len(h)/2; i++ {
 		if rw.HeaderMap.Get(h[i]) != h[i+1] {
-			rw.Errorf("CheckHeader response header %s value is %s,not is %s", h[i], rw.HeaderMap.Get(h[i]), h[i+1])
+			rw.Request.Errorf("CheckHeader response header %s value is %s,not is %s", h[i], rw.HeaderMap.Get(h[i]), h[i+1])
 		}
 	}
 	return rw
@@ -200,7 +215,7 @@ func (rw *ResponseWriterTest) CheckBodyContainString(strs ...string) *ResponseWr
 	body := rw.Body.String()
 	for _, str := range strs {
 		if !strings.Contains(body, str) {
-			rw.Errorf("CheckBodyContainString response body not contains string: %s", str)
+			rw.Request.Errorf("CheckBodyContainString response body not contains string: %s", str)
 		}
 	}
 	return rw
@@ -209,7 +224,7 @@ func (rw *ResponseWriterTest) CheckBodyContainString(strs ...string) *ResponseWr
 // CheckBodyString 方法检查body是否为指定字符串。
 func (rw *ResponseWriterTest) CheckBodyString(s string) *ResponseWriterTest {
 	if s != rw.Body.String() {
-		rw.Errorf("CheckBodyString response body size %d not is check string", rw.Body.Len())
+		rw.Request.Errorf("CheckBodyString response body size %d not is check string", rw.Body.Len())
 	}
 	return rw
 }
@@ -227,29 +242,29 @@ func (rw *ResponseWriterTest) Out() *ResponseWriterTest {
 		b.WriteString(fmt.Sprintf("\n%s: %s", k, v))
 	}
 	b.WriteString("\n\n" + rw.Body.String())
-	rw.client.Println(b.String())
+	rw.Client.Println(b.String())
 	return rw
 }
 
 // OutStatus 方法输出状态码。
 func (rw *ResponseWriterTest) OutStatus() *ResponseWriterTest {
-	rw.client.Printf("httptest request %s %s status: %d", rw.Request.Method, rw.Request.RequestURI, rw.Code)
+	rw.Client.Printf("httptest request %s %s status: %d\n", rw.Request.Method, rw.Request.RequestURI, rw.Code)
 	return rw
 }
 
 // OutHeader 方法输出全部header。
 func (rw *ResponseWriterTest) OutHeader() *ResponseWriterTest {
 	var b bytes.Buffer
-	b.WriteString(fmt.Sprintf("httptest request %s %s status: %d", rw.Request.Method, rw.Request.RequestURI, rw.Code))
+	b.WriteString(fmt.Sprintf("httptest request %s %s status: %d\n", rw.Request.Method, rw.Request.RequestURI, rw.Code))
 	for k, v := range rw.HeaderMap {
 		b.WriteString(fmt.Sprintf("\n%s: %s", k, v))
 	}
-	rw.client.Println(b.String())
+	rw.Client.Println(b.String())
 	return rw
 }
 
 // OutBody 方法输出body字符串信息。
 func (rw *ResponseWriterTest) OutBody() *ResponseWriterTest {
-	rw.client.Printf("httptest request %s %s body: %s", rw.Request.Method, rw.Request.RequestURI, rw.Body.String())
+	rw.Client.Printf("httptest request %s %s body: %s\n", rw.Request.Method, rw.Request.RequestURI, rw.Body.String())
 	return rw
 }

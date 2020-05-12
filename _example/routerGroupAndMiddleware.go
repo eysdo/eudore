@@ -12,12 +12,15 @@ import (
 )
 
 func main() {
-	app := eudore.NewCore()
-	app.AddMiddleware(middleware.NewLoggerFunc(app.App, "route"))
+	app := eudore.NewApp()
+	app.AddMiddleware(middleware.NewLoggerFunc(app, "route"))
 
 	// 创建组路由
 	apiv1 := app.Group("/api/v1")
 	apiv1.AddMiddleware(middleware.NewRecoverFunc())
+	apiv1.AddMiddleware("/*", func(ctx eudore.Context) {
+		ctx.WriteString("apiv1 route is '/*'")
+	})
 	apiv1.AnyFunc("/*", handlepre1, handleparam)
 	apiv1.GetFunc("/get/:name", handleget)
 
@@ -34,10 +37,8 @@ func main() {
 	for client.Next() {
 		app.Error(client.Error())
 	}
-	client.Stop(0)
 
-	// 启动server
-	app.Listen(":8088")
+	app.CancelFunc()
 	app.Run()
 }
 

@@ -23,16 +23,24 @@ import (
 )
 
 func main() {
-	app := eudore.NewCore()
-	httptest.NewClient(app).Stop(0)
+	app := eudore.NewApp()
 	app.AnyFunc("/get", func(ctx eudore.Context) {
 		// 遍历请求header
 		for k, v := range ctx.Request().Header {
 			fmt.Fprintf(ctx, "%s: %s\n", k, v)
 		}
 		// 获取一个请求header
+		ctx.SetHeader("name", "eudore")
 		ctx.Infof("user-agent: %s", ctx.GetHeader("User-Agent"))
 	})
-	app.Listen(":8088")
+
+	client := httptest.NewClient(app)
+	client.NewRequest("PUT", "/get").WithHeaderValue(eudore.HeaderContentType, eudore.MimeApplicationForm).Do().CheckStatus(200).Out()
+
+	for client.Next() {
+		app.Error(client.Error())
+	}
+
+	app.CancelFunc()
 	app.Run()
 }

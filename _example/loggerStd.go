@@ -9,10 +9,10 @@ TimeFormat 日志时间格式化格式
 LoggerStd的配置，可以使用*LoggerStdConfig或者map类型。
 
 type LoggerStdConfig struct {
-	Std        bool        `set:"std"`
-	Path       string      `set:"path"`
-	Level      LoggerLevel `set:"level"`
-	TimeFormat string      `set:"timeformat"`
+	Std        bool        `alias:"std"`
+	Path       string      `alias:"path"`
+	Level      LoggerLevel `alias:"level"`
+	TimeFormat string      `alias:"timeformat"`
 }
 */
 
@@ -21,14 +21,12 @@ import (
 )
 
 func main() {
-	app := eudore.NewCore()
-	// 创建日志
-	app.Logger, _ = eudore.NewLoggerStd(map[string]interface{}{
+	app := eudore.NewApp(eudore.NewLoggerStd(map[string]interface{}{
 		"std":        false,
 		"path":       "",
 		"Level":      "1",
 		"TimeFormat": "Mon Jan 2 15:04:05 -0700 MST 2006",
-	})
+	}))
 
 	app.Debug("debug")
 	app.Info("info")
@@ -38,5 +36,6 @@ func main() {
 	app.Debug("debug")
 	app.Info("info")
 
-	app.Logger.Sync()
+	app.CancelFunc()
+	app.Run()
 }

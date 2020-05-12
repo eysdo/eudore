@@ -6,9 +6,7 @@ package main
 
 import (
 	"github.com/eudore/eudore"
-	"github.com/eudore/eudore/component/httptest"
 	"os"
-	"time"
 )
 
 var filepath = "example.json"
@@ -26,11 +24,10 @@ func main() {
 	defer os.Remove(tmpfile.Name())
 	tmpfile.Write(content)
 
-	time.Sleep(100 * time.Millisecond)
-	app := eudore.NewCore()
-	httptest.NewClient(app).Stop(0)
+	app := eudore.NewApp()
 	app.Set("keys.config", filepath)
 	app.Set("keys.help", true)
-	app.Listen(":8088")
+	app.Options(app.Parse())
+	app.CancelFunc()
 	app.Run()
 }

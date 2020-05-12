@@ -22,22 +22,21 @@ import (
 )
 
 func main() {
-	app := eudore.NewCore()
-	app.AddMiddleware(middleware.NewLoggerFunc(app.App, "route"))
+	app := eudore.NewApp()
+	app.AddMiddleware(middleware.NewLoggerFunc(app, "route"))
 	app.AddMiddleware(func(ctx eudore.Context) {
 		ctx.WriteString("pre\n")
 		ctx.Next()
 		ctx.WriteString("\npost")
 	})
-	app.AnyFunc("/*", "hello")
+	app.AnyFunc("/*", eudore.HandlerEmpty)
 
 	client := httptest.NewClient(app)
 	client.NewRequest("PUT", "/1").Do().Out()
 	for client.Next() {
 		app.Error(client.Error())
 	}
-	client.Stop(0)
 
-	app.Listen(":8088")
+	app.CancelFunc()
 	app.Run()
 }

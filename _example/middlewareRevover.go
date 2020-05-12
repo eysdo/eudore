@@ -7,9 +7,16 @@ import (
 )
 
 func main() {
-	app := eudore.NewCore()
-	httptest.NewClient(app).Stop(0)
+	app := eudore.NewApp()
+	app.AddMiddleware(middleware.NewLoggerFunc(app, "route"))
 	app.AddMiddleware(middleware.NewRecoverFunc())
-	app.Listen(":8088")
+	app.AnyFunc("/*", func(eudore.Context) {
+		panic("test error")
+	})
+
+	client := httptest.NewClient(app)
+	client.NewRequest("GET", "/").Do()
+
+	app.CancelFunc()
 	app.Run()
 }

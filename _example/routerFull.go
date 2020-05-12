@@ -26,11 +26,11 @@ import (
 )
 
 func main() {
-	app := eudore.NewCore()
+	app := eudore.NewApp()
 
 	// 修改路由
 	app.Router = eudore.NewRouterFull()
-	eudore.Set(app.Router, "print", eudore.NewPrintFunc(app.App))
+	eudore.Set(app.Router, "print", eudore.NewPrintFunc(app))
 
 	app.AddMiddleware(func(ctx eudore.Context) {
 		ctx.WriteString("route: " + ctx.GetParam("route") + "\n")
@@ -47,6 +47,8 @@ func main() {
 	app.AnyFunc("/*path", func(ctx eudore.Context) {
 		ctx.WriteString("any path: /" + ctx.GetParam("path") + "\n")
 	})
+	app.AddHandler("404", "", eudore.HandlerRouter404)
+	app.AddHandler("405", "", eudore.HandlerRouter405)
 
 	// ---------- 分割线 -----上面是routerRadix.go例子复制的路由 下面注册RouterFull路由 ----------
 
@@ -68,6 +70,7 @@ func main() {
 		ctx.WriteString("get path first char is '0', path is: " + ctx.GetParam("path") + "\n")
 	})
 
+	app.GetFunc("/:path|haha", eudore.HandlerRouter404)
 	// ---------- 分割线 运行测试请求 ----------
 
 	// 测试
@@ -85,9 +88,7 @@ func main() {
 	for client.Next() {
 		app.Error(client.Error())
 	}
-	client.Stop(0)
 
-	// 启动server
-	app.Listen(":8088")
+	app.CancelFunc()
 	app.Run()
 }

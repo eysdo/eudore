@@ -7,70 +7,72 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"regexp"
 	"strings"
 	"sync"
 )
 
-type (
-	// Header 定义eudore.Header为http.Header。
-	Header = http.Header
-	// RequestReader 对象为请求信息的载体。
-	RequestReader = http.Request
-	// ResponseWriter 接口用于写入http请求响应体status、header、body。
-	//
-	// net/http.response实现了flusher、hijacker、pusher接口。
-	ResponseWriter interface {
-		// http.ResponseWriter
-		Header() http.Header
-		Write([]byte) (int, error)
-		WriteHeader(int)
-		// http.Flusher
-		Flush()
-		// http.Hijacker
-		Hijack() (net.Conn, *bufio.ReadWriter, error)
-		// http.Pusher
-		Push(string, *http.PushOptions) error
-		Size() int
-		Status() int
-	}
-	// ResponseWriterHTTP 是对net/http.ResponseWriter接口封装
-	ResponseWriterHTTP struct {
-		http.ResponseWriter
-		code int
-		size int
-	}
+// Stream 定义请求流，抽象websocket处理。
+type Stream interface {
+	StreamID() string
+	GetType() int
+	SetType(int)
+	SendMsg(interface{}) error
+	RecvMsg(interface{}) error
+	io.ReadWriteCloser
+}
 
-	// SetCookie 定义响应返回的set-cookie header的数据生成
-	SetCookie = http.Cookie
-	// Cookie 定义请求读取的cookie header的键值对数据存储
-	Cookie struct {
-		Name  string
-		Value string
-	}
+// RequestReader 对象为请求信息的载体。
+type RequestReader = http.Request
 
-	// Params 定义请求上下文中的参数接口。
-	Params interface {
-		Get(string) string
-		Add(string, string)
-		Set(string, string)
-	}
-	// ParamsArray 使用数组实现Params
-	ParamsArray struct {
-		Keys []string
-		Vals []string
-	}
-)
+// ResponseWriter 接口用于写入http请求响应体status、header、body。
+//
+// net/http.response实现了flusher、hijacker、pusher接口。
+type ResponseWriter interface {
+	// http.ResponseWriter
+	Header() http.Header
+	Write([]byte) (int, error)
+	WriteHeader(int)
+	// http.Flusher
+	Flush()
+	// http.Hijacker
+	Hijack() (net.Conn, *bufio.ReadWriter, error)
+	// http.Pusher
+	Push(string, *http.PushOptions) error
+	Size() int
+	Status() int
+}
+
+// ResponseWriterHTTP 是对net/http.ResponseWriter接口封装
+type ResponseWriterHTTP struct {
+	http.ResponseWriter
+	code int
+	size int
+}
+
+// SetCookie 定义响应返回的set-cookie header的数据生成
+type SetCookie = http.Cookie
+
+// Cookie 定义请求读取的cookie header的键值对数据存储
+type Cookie struct {
+	Name  string
+	Value string
+}
+
+// Params 定义请求上下文中的参数接口。
+type Params interface {
+	Get(string) string
+	Add(string, string)
+	Set(string, string)
+}
+
+// ParamsArray 使用数组实现Params
+type ParamsArray struct {
+	Keys []string
+	Vals []string
+}
 
 var (
-	sriRegexpScript, _                    = regexp.Compile(`\s*<script.*src=([\"\'])(\S*\.js)([\"\']).*></script>`)
-	sriRegexpCSS, _                       = regexp.Compile(`\s*<link.*href=([\"\'])(\S*\.css)([\"\']).*>`)
-	sriRegexpImg, _                       = regexp.Compile(`\s*<img.*src=([\"\'])(\S*)([\"\']).*>`)
-	sriRegexpIntegrity, _                 = regexp.Compile(`.*\s+integrity=[\"\'](\S*)[\"\'].*`)
-	cachePushFile                         = make(map[string][]string)
-	_                      ResponseWriter = (*ResponseWriterHTTP)(nil)
-	responseWriterHTTPPool                = sync.Pool{
+	responseWriterHTTPPool = sync.Pool{
 		New: func() interface{} {
 			return &ResponseWriterHTTP{}
 		},
@@ -113,8 +115,10 @@ func (p *ParamsArray) Get(key string) string {
 
 // Add 方法添加一个参数。
 func (p *ParamsArray) Add(key string, val string) {
-	p.Keys = append(p.Keys, key)
-	p.Vals = append(p.Vals, val)
+	if key != "" {
+		p.Keys = append(p.Keys, key)
+		p.Vals = append(p.Vals, val)
+	}
 }
 
 // Set 方法设置一个参数的值。
@@ -164,7 +168,7 @@ func (w *ResponseWriterHTTP) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // Push 方法实现http Psuh，如果ResponseWriterHTTP实现http.Push接口，则Push资源。
 func (w *ResponseWriterHTTP) Push(target string, opts *http.PushOptions) error {
 	if pusher, ok := w.ResponseWriter.(http.Pusher); ok {
-		return pusher.Push(target, &http.PushOptions{})
+		return pusher.Push(target, opts)
 	}
 	return nil
 }
@@ -286,63 +290,4 @@ var isTokenTable = [127]bool{
 	'z':  true,
 	'|':  true,
 	'~':  true,
-}
-
-// HandlerPush 根据文件名称自动push其中的资源
-func HandlerPush(ctx Context, path string) {
-	if ctx.Request().Proto != "HTTP/2.0" {
-		return
-	}
-	files, ok := cachePushFile[path]
-	if !ok {
-		files, _ = getStatic(path)
-		cachePushFile[path] = files
-	}
-	// push file
-	for _, file := range files {
-		ctx.Push(file, nil)
-	}
-}
-
-func getStatic(path string) ([]string, error) {
-	// 检测文件大小
-	fileInfo, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if fileInfo.Size() > 10<<20 {
-		return nil, fmt.Errorf("%s file is to long, size: %d", path, fileInfo.Size())
-	}
-	// 打开文件
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	var statics = []string{"/favicon.ico"}
-	br := bufio.NewReader(file)
-	for {
-		line, err := br.ReadString('\n')
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		// match script
-		params := sriRegexpScript.FindStringSubmatch(line)
-		// match css
-		if len(params) == 0 {
-			params = sriRegexpCSS.FindStringSubmatch(line)
-		}
-		if len(params) == 0 {
-			params = sriRegexpImg.FindStringSubmatch(line)
-		}
-		// 判断是否匹配数据
-		if len(params) > 1 {
-			statics = append(statics, params[2])
-		}
-	}
-	return statics, nil
 }

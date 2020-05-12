@@ -15,50 +15,44 @@ const (
 	radixNodeKindAnyMethod
 )
 
-type (
-	// RouterCoreRadix basic function router based on radix tree implementation.
-	//
-	// There are three basic functions: path parameter, wildcard parameter, default parameter, and parameter verification.
-	// RouterRadix基于基数树实现的基本功能路由器。
-	//
-	// 具有路径参数、通配符参数、默认参数三项基本功能。
-	RouterCoreRadix struct {
-		// save middleware
-		// 保存注册的中间件信息
-		middlewares *trieNode
-		// exception handling method
-		// 异常处理方法
-		node404     radixNode
-		nodefunc404 HandlerFuncs
-		node405     radixNode
-		nodefunc405 HandlerFuncs
-		// various methods routing tree
-		// 各种方法路由树
-		root    radixNode
-		get     radixNode
-		post    radixNode
-		put     radixNode
-		delete  radixNode
-		options radixNode
-		head    radixNode
-		patch   radixNode
-	}
-	// radix节点的定义
-	radixNode struct {
-		// 基本信息
-		kind uint8
-		path string
-		name string
-		// 每次类型子节点
-		Cchildren []*radixNode
-		Pchildren []*radixNode
-		Wchildren *radixNode
-		// 当前节点的数据
-		tags     []string
-		vals     []string
-		handlers HandlerFuncs
-	}
-)
+// RouterCoreRadix basic function router based on radix tree implementation.
+//
+// There are three basic functions: path parameter, wildcard parameter, default parameter, and parameter verification.
+// RouterRadix基于基数树实现的基本功能路由器。
+//
+// 具有路径参数、通配符参数、默认参数三项基本功能。
+type RouterCoreRadix struct {
+	// exception handling method
+	// 异常处理方法
+	node404 radixNode
+	node405 radixNode
+	// various methods routing tree
+	// 各种方法路由树
+	root    radixNode
+	get     radixNode
+	post    radixNode
+	put     radixNode
+	delete  radixNode
+	options radixNode
+	head    radixNode
+	patch   radixNode
+}
+
+// radix节点的定义
+type radixNode struct {
+	// 基本信息
+	kind uint8
+	path string
+	name string
+	// 每次类型子节点
+	Cchildren []*radixNode
+	Pchildren []*radixNode
+	Wchildren *radixNode
+	// 当前节点的数据
+	tags     []string
+	vals     []string
+	handlers HandlerFuncs
+}
 
 // NewRouterRadix 创建一个Radix路由器。
 func NewRouterRadix() Router {
@@ -68,8 +62,6 @@ func NewRouterRadix() Router {
 // NewRouterCoreRadix 函数创建一个Full路由器核心，使用radix匹配。
 func NewRouterCoreRadix() RouterCore {
 	return &RouterCoreRadix{
-		nodefunc404: HandlerFuncs{HandlerRouter404},
-		nodefunc405: HandlerFuncs{HandlerRouter405},
 		node404: radixNode{
 			tags:     []string{ParamRoute},
 			vals:     []string{"404"},
@@ -82,44 +74,26 @@ func NewRouterCoreRadix() RouterCore {
 				handlers: HandlerFuncs{HandlerRouter405},
 			},
 		},
-		middlewares: newTrieNode(),
 	}
 }
 
-// RegisterMiddleware register the middleware into the middleware tree and append the handler if it exists.
+// HandleFunc register a new method request path to the router.
 //
-// RegisterMiddleware注册中间件到中间件树中，如果存在则追加处理者。
-func (r *RouterCoreRadix) RegisterMiddleware(path string, hs HandlerFuncs) {
-	path = strings.Split(path, " ")[0]
-	r.middlewares.Insert(path, hs)
-	if path == "" {
-		r.node404.handlers = append(r.middlewares.vals, r.nodefunc404...)
-		r.node405.Wchildren.handlers = append(r.middlewares.vals, r.nodefunc405...)
-	}
-}
-
-// RegisterHandler register a new method request path to the router
+// HandleFunc 给路由器注册一个新的方法请求路径。
 //
-// The router matches the handlers available to the current path from the middleware tree and adds them to the front of the handler.
-//
-// RegisterHandler 给路由器注册一个新的方法请求路径
-//
-// 路由器会从中间件树中匹配当前路径可使用的处理者，并添加到处理者前方。
-func (r *RouterCoreRadix) RegisterHandler(method string, path string, handler HandlerFuncs) {
+// 如果方法是Any会注册全部方法，同时非Any方法路由和覆盖Any方法路由。
+func (r *RouterCoreRadix) HandleFunc(method string, path string, handler HandlerFuncs) {
 	switch method {
 	case "NotFound", "404":
-		r.nodefunc404 = handler
-		r.node404.handlers = HandlerFuncsCombine(r.middlewares.vals, handler)
+		r.node404.handlers = handler
 	case "MethodNotAllowed", "405":
-		r.nodefunc405 = handler
-		r.node405.Wchildren.handlers = HandlerFuncsCombine(r.middlewares.vals, handler)
+		r.node405.Wchildren.handlers = handler
 	case MethodAny:
-		handler = HandlerFuncsCombine(r.middlewares.Lookup(path), handler)
 		for _, method := range RouterAllMethod {
 			r.insertRoute(method, path, true, handler)
 		}
 	default:
-		r.insertRoute(method, path, false, HandlerFuncsCombine(r.middlewares.Lookup(path), handler))
+		r.insertRoute(method, path, false, handler)
 	}
 }
 
@@ -178,19 +152,6 @@ func (r *RouterCoreRadix) Match(method, path string, params Params) HandlerFuncs
 	return r.node404.handlers
 }
 
-// Create a 405 response radixNode.
-//
-// 创建一个405响应的radixNode。
-func newRadixNode405(args string, h HandlerFunc) *radixNode {
-	newNode := &radixNode{
-		Wchildren: &radixNode{
-			handlers: HandlerFuncs{h},
-		},
-	}
-	newNode.Wchildren.SetTags(strings.Split(args, " "))
-	return newNode
-}
-
 // Create a Radix tree Node that will set different node types based on the current route.
 //
 // '*' prefix is a wildcard node, ':' prefix is a parameter node, and other non-constant nodes.
@@ -241,20 +202,19 @@ func (r *radixNode) InsertNode(path string, nextNode *radixNode) *radixNode {
 		return r
 	}
 	nextNode.path = path
-	switch nextNode.kind {
+	switch nextNode.kind &^ radixNodeKindAnyMethod {
 	case radixNodeKindConst:
 		for i := range r.Cchildren {
 			subStr, find := getSubsetPrefix(path, r.Cchildren[i].path)
 			if find {
-				if subStr == r.Cchildren[i].path {
-					nextTargetKey := strings.TrimPrefix(path, r.Cchildren[i].path)
-					return r.Cchildren[i].InsertNode(nextTargetKey, nextNode)
+				if subStr != r.Cchildren[i].path {
+					r.Cchildren[i].path = strings.TrimPrefix(r.Cchildren[i].path, subStr)
+					r.Cchildren[i] = &radixNode{
+						path:      subStr,
+						Cchildren: []*radixNode{r.Cchildren[i]},
+					}
 				}
-				newNode := r.SplitNode(subStr, r.Cchildren[i].path)
-				if newNode == nil {
-					panic("Unexpect error on split node")
-				}
-				return newNode.InsertNode(strings.TrimPrefix(path, subStr), nextNode)
+				return r.Cchildren[i].InsertNode(strings.TrimPrefix(path, subStr), nextNode)
 			}
 		}
 		r.Cchildren = append(r.Cchildren, nextNode)
@@ -272,37 +232,20 @@ func (r *radixNode) InsertNode(path string, nextNode *radixNode) *radixNode {
 		}
 		r.Pchildren = append(r.Pchildren, nextNode)
 	case radixNodeKindWildcard:
+		if r.Wchildren != nil {
+			return r.Wchildren
+		}
 		r.Wchildren = nextNode
-	default:
-		panic("Undefined radix node type")
+		// default:
+		// 	panic("Undefined radix node type from router radix.")
 	}
 	return nextNode
-}
-
-// SplitNode bifurcate the child node whose path is edgeKey, and the fork common prefix path is pathKey.
-//
-// SplitNode 对指定路径为edgeKey的子节点分叉，分叉公共前缀路径为pathKey。
-func (r *radixNode) SplitNode(pathKey, edgeKey string) *radixNode {
-	for i := range r.Cchildren {
-		if r.Cchildren[i].path == edgeKey {
-			newNode := &radixNode{path: pathKey}
-			newNode.Cchildren = append(newNode.Cchildren, r.Cchildren[i])
-
-			r.Cchildren[i].path = strings.TrimPrefix(edgeKey, pathKey)
-			r.Cchildren[i] = newNode
-			return newNode
-		}
-	}
-	return nil
 }
 
 // Set the tags for the current Node
 //
 // 给当前Node设置tags
 func (r *radixNode) SetTags(args []string) {
-	if len(args) == 0 {
-		return
-	}
 	r.tags = make([]string, len(args))
 	r.vals = make([]string, len(args))
 	// The first parameter name defaults to route
@@ -440,7 +383,6 @@ func getSplitPath(key string) []string {
 			}
 			continue
 		}
-		// fmt.Println(last, key[i:i+1])
 		switch key[i] {
 		case '/':
 			if !isconst {
