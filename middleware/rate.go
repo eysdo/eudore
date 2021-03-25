@@ -2,115 +2,250 @@ package middleware
 
 import (
 	"context"
-	"net/http"
-	"strings"
+	"errors"
+	"io"
 	"sync"
 	"time"
 
 	"github.com/eudore/eudore"
-	"golang.org/x/time/rate"
 )
 
-// Rate 定义限流器
-type Rate struct {
-	visitors map[string]*visitor
-	mtx      sync.RWMutex
-	Rate     rate.Limit
-	Burst    int
-}
-
-type visitor struct {
-	limiter  *rate.Limiter
-	lastSeen time.Time
-}
-
-// NewRate 创建一个限流器。
+// NewRateRequestFunc 返回一个限流处理函数。
 //
-// 周期内增加r2个令牌，最多拥有burst个。
-func NewRate(ctx context.Context, r2, burst int) *Rate {
-	r := &Rate{
-		visitors: make(map[string]*visitor),
-		Rate:     rate.Limit(r2),
-		Burst:    burst,
+// 每周期(默认秒)增加speed个令牌，最多拥有max个。
+//
+// options:
+//
+// context.Context               =>    控制cleanupVisitors退出的生命周期
+//
+// time.Duration                 =>    基础时间周期单位，默认秒
+//
+// func(eudore.Context) string   =>    限流获取key的函数，默认Context.ReadIP
+func NewRateRequestFunc(speed, max int64, options ...interface{}) eudore.HandlerFunc {
+	return newRate(speed, max, options...).HandlerRequest
+}
+
+// NewRateSpeedFunc 函数创建一个限速处理函数，不区分上下行流量。
+//
+// speed为速度(byte),max为默认初始化流量值，参数参考NewRateRequestFunc。
+//
+// speed速度不要小于通常Reader的缓冲区大小(最好大于4kB 4096)，否则无法请求到住够的令牌导致阻塞。
+//
+// Read时先请求缓冲区大小数量的令牌，然后返还未使用的令牌数量；Write时请求写入数据长度数量的令牌。
+func NewRateSpeedFunc(speed, max int64, options ...interface{}) eudore.HandlerFunc {
+	return newRate(speed, max, options...).HandlerSpeed
+}
+
+func newRate(speed, max int64, options ...interface{}) *rate {
+	r := &rate{
+		visitors: make(map[string]*rateBucket),
+		GetKeyFunc: func(ctx eudore.Context) string {
+			return ctx.RealIP()
+		},
+		speed: int64(time.Second) / speed,
+		max:   int64(time.Second) / speed * max,
+	}
+	ctx := context.Background()
+	for _, i := range options {
+		switch val := i.(type) {
+		case context.Context:
+			ctx = val
+		case time.Duration:
+			r.speed = int64(val) / speed
+			r.max = int64(val) / speed * max
+		case func(eudore.Context) string:
+			r.GetKeyFunc = val
+		}
 	}
 	go r.cleanupVisitors(ctx)
 	return r
 }
 
-// NewRateFunc 返回一个限流处理函数。
-func NewRateFunc(ctx context.Context, r2, burst int) eudore.HandlerFunc {
-	return NewRate(ctx, r2, burst).HandleHTTP
-}
-
-// ServeHTTP 方法实现http.Handler接口。
-func (r *Rate) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	key := getRealClientIP(req)
-	limiter := r.GetVisitor(key)
-	if !limiter.Allow() {
-		http.Error(w, http.StatusText(429), http.StatusTooManyRequests)
-		req.Method = "Deny"
-		return
-	}
-}
-
-// HandleHTTP 方法实现eudore请求上下文处理函数。
-func (r *Rate) HandleHTTP(ctx eudore.Context) {
-	key := ctx.RealIP()
-	limiter := r.GetVisitor(key)
-	if !limiter.Allow() {
-		ctx.WriteHeader(http.StatusTooManyRequests)
-		ctx.Fatal("rate: " + key)
+// HandlerRequest 方法实现eudore请求上下文处理函数。
+func (r *rate) HandlerRequest(ctx eudore.Context) {
+	key := r.GetKeyFunc(ctx)
+	if !r.GetVisitor(key).WaitWithDeadline(ctx.GetContext(), 1) {
+		ctx.WriteHeader(eudore.StatusTooManyRequests)
+		ctx.Fatal("deny request of rate request: " + key)
 		ctx.End()
 	}
 }
 
-// GetVisitor 方法通过ip获得*rate.Limiter。
-func (r *Rate) GetVisitor(key string) *rate.Limiter {
-	r.mtx.RLock()
-	v, exists := r.visitors[key]
-	if !exists {
-		r.mtx.RUnlock()
-		return r.AddVisitor(key)
+func (r *rate) HandlerSpeed(ctx eudore.Context) {
+	rate := r.GetVisitor(r.GetKeyFunc(ctx))
+	httpctx := ctx.GetContext()
+	ctx.Request().Body = &rateRequqest{
+		ReadCloser: ctx.Request().Body,
+		Context:    httpctx,
+		rateBucket: rate,
 	}
-	// Update the last seen time for the visitor.
-	v.lastSeen = time.Now()
-	r.mtx.RUnlock()
-	return v.limiter
+	ctx.SetResponse(&rateResponse{
+		ResponseWriter: ctx.Response(),
+		Context:        httpctx,
+		rateBucket:     rate,
+	})
 }
 
-// AddVisitor Change the the map to hold values of the type visitor.
-func (r *Rate) AddVisitor(key string) *rate.Limiter {
-	limiter := rate.NewLimiter(r.Rate, r.Burst)
-	r.mtx.Lock()
-	r.visitors[key] = &visitor{limiter, time.Now()}
-	r.mtx.Unlock()
-	return limiter
+// GetVisitor 方法通过ip获得rateBucket。
+func (r *rate) GetVisitor(key string) *rateBucket {
+	r.mu.RLock()
+	v, exists := r.visitors[key]
+	r.mu.RUnlock()
+	if !exists {
+		limiter := newBucket(r.speed, r.max)
+		r.mu.Lock()
+		r.visitors[key] = limiter
+		r.mu.Unlock()
+		return limiter
+	}
+	return v
 }
 
-func (r *Rate) cleanupVisitors(ctx context.Context) {
+func (r *rate) cleanupVisitors(ctx context.Context) {
+	dura := time.Duration(r.max) * 10
+	if time.Millisecond < dura && dura < time.Minute {
+		dura = time.Minute
+	}
 	for {
 		select {
+		case now := <-time.After(dura):
+			dead := now.UnixNano() - int64(dura)
+			r.mu.Lock()
+			for key, v := range r.visitors {
+				v.Lock()
+				if v.last < dead {
+					delete(r.visitors, key)
+				}
+				v.Unlock()
+			}
+			r.mu.Unlock()
 		case <-ctx.Done():
 			return
-		default:
-			time.Sleep(time.Minute)
-			for key, v := range r.visitors {
-				if time.Now().Sub(v.lastSeen) > time.Minute {
-					r.mtx.Lock()
-					delete(r.visitors, key)
-					r.mtx.Unlock()
-				}
-			}
 		}
 	}
 }
 
-// getRealClientIP 函数获取http请求的真实ip
-func getRealClientIP(r *http.Request) string {
-	xforward := r.Header.Get("X-Forwarded-For")
-	if "" == xforward {
-		return strings.SplitN(r.RemoteAddr, ":", 2)[0]
+var errRateReadWaitLong = errors.New("If the github.com/eudore/eudore/middleware speed limit waiting time is too long, it will time out.")
+var errRateWriteWaitLong = errors.New("If the github.com/eudore/eudore/middleware speed limit waits for write time is too long, it will wait for timeout.")
+
+type rateRequqest struct {
+	io.ReadCloser
+	context.Context
+	*rateBucket
+}
+
+type rateResponse struct {
+	eudore.ResponseWriter
+	context.Context
+	*rateBucket
+}
+
+func (r *rateRequqest) Read(body []byte) (int, error) {
+	length := len(body)
+	if r.Wait(r.Context, int64(length)) {
+		n, err := r.ReadCloser.Read(body)
+		if length != n {
+			r.Put(int64(length - n))
+		}
+		return n, err
+	}
+	err := r.Err()
+	if err == nil {
+		err = errRateReadWaitLong
+	}
+	return 0, err
+}
+
+func (r *rateResponse) Write(body []byte) (int, error) {
+	if r.Wait(r.Context, int64(len(body))) {
+		return r.ResponseWriter.Write(body)
+	}
+	err := r.Err()
+	if err == nil {
+		err = errRateWriteWaitLong
+	}
+	return 0, err
+}
+
+// rate 定义限流器
+type rate struct {
+	mu         sync.RWMutex
+	visitors   map[string]*rateBucket
+	GetKeyFunc func(eudore.Context) string
+	speed      int64
+	max        int64
+}
+
+type rateBucket struct {
+	sync.Mutex
+	speed int64
+	max   int64
+	last  int64
+}
+
+func newBucket(speed, max int64) *rateBucket {
+	return &rateBucket{
+		speed: speed,
+		max:   max,
+		last:  time.Now().UnixNano() - max,
+	}
+}
+
+func (r *rateBucket) Put(n int64) {
+	r.Lock()
+	r.last = r.last - n*r.speed
+	r.Unlock()
+}
+
+func (r *rateBucket) Allow(n int64) bool {
+	r.Lock()
+	defer r.Unlock()
+	now := time.Now().UnixNano()
+	n = r.last + n*r.speed
+	if n < now {
+		r.last = n
+		now = now - r.max
+		if r.last < now {
+			r.last = now
+		}
+		return true
+	}
+	return false
+}
+
+func (r *rateBucket) Wait(ctx context.Context, n int64) bool {
+	r.Lock()
+	defer r.Unlock()
+	now := time.Now().UnixNano()
+	n = r.last + n*r.speed
+	if n < now {
+		r.last = n
+		now = now - r.max
+		if r.last < now {
+			r.last = now
+		}
+		return true
 	}
 
-	return strings.SplitN(string(xforward), ",", 2)[0]
+	dead, ok := ctx.Deadline()
+	if ok && dead.UnixNano() < n {
+		return false
+	}
+
+	ticker := time.NewTicker(time.Duration(n - now))
+	defer ticker.Stop()
+	select {
+	case <-ticker.C:
+		r.last = n
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (r *rateBucket) WaitWithDeadline(ctx context.Context, n int64) bool {
+	if _, ok := ctx.Deadline(); ok {
+		return r.Wait(ctx, n)
+	}
+	return r.Allow(n)
 }

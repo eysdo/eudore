@@ -20,7 +20,7 @@ import (
 )
 
 func main() {
-	acl := ram.NewAcl()
+	acl := ram.NewACL()
 	acl.AddPermission(1, "1")
 	acl.AddPermission(2, "2")
 	acl.AddPermission(3, "3")
@@ -29,12 +29,17 @@ func main() {
 	acl.AddPermission(6, "6")
 	acl.AddPermission(10, "hello")
 	acl.BindAllowPermission(0, 1)
-	acl.BindAllowPermission(0, 2)
+	acl.BindDenyPermission(0, 2)
 	acl.BindAllowPermission(1, 3)
 	acl.BindAllowPermission(1, 4)
-	acl.BindDenyPermission(2, 4)
-	acl.BindAllowPermission(2, 5)
-	acl.BindAllowPermission(2, 6)
+	acl.BindPermission(2, 4, false)
+	acl.BindPermission(2, 5, true)
+	acl.BindPermission(2, 6, true)
+
+	acl.UnbindPermission(0, 6)
+	acl.UnbindPermission(0, 1)
+	acl.UnbindPermission(0, 2)
+	acl.DeletePermission("6")
 
 	app := eudore.NewApp()
 	app.AddMiddleware(middleware.NewLoggerFunc(app, "action", "ram", "route", "resource", "browser"))
@@ -56,10 +61,8 @@ func main() {
 	client.NewRequest("PUT", "/4").Do().CheckStatus(200)
 	client.NewRequest("PUT", "/5").Do().CheckStatus(200)
 	client.NewRequest("PUT", "/6").Do().CheckStatus(200)
-	for client.Next() {
-		app.Error(client.Error())
-	}
 
-	app.CancelFunc()
+	app.Listen(":8088")
+	// app.CancelFunc()
 	app.Run()
 }

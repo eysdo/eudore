@@ -1,10 +1,14 @@
 #!/bin/bash
 
+# OUT=/mnt/hgfs/golang/coverage.html GOROOT=/usr/local/go1.11 bash gotest.sh
+
 # 检测目录
 dir=$(go list -json github.com/eudore/eudore  | grep '"Dir"' | cut -f4 -d'"')
 if [ -z $dir ];then
 	exit 1
 fi
+echo "goroot: $GOROOT"
+$GOROOT/bin/go version
 echo $dir
 
 # 转换example
@@ -16,21 +20,25 @@ do
 	sed 's/func main()/func Test'"${funcname}"'(*testing.T)/' ${i} > $dir/${testname}
 	sed -i 's/import/import "testing"\nimport/' $dir/${testname}
 	sed -i 's/package main/package eudore_test/' $dir/${testname}
+	sed -i 's/\/\/ app.CancelFunc()/app.CancelFunc()/' $dir/${testname}
 done
 
 # 复制文件
 cp -rf *_test.go $dir/
 cd $dir
-rm -f appDefine_test.go appNotify_test.go appDaemon_test.go 
+rm -f appDefine_test.go appNotify_test.go appDaemon_test.go
 
-export ENV_KEYS_NAME=eudore
+COVERPKG='github.com/eudore/eudore,github.com/eudore/eudore/middleware,github.com/eudore/eudore/component/ram,github.com/eudore/eudore/component/httptest'
+export ENV_NAME=eudore
 export GODOC=https://golang.org
+export CGO_ENABLED=1
+
 # 运行测试
 if [ $# -ne 0 ];then
 	$*
 elif [ -z $OUT ];then
-	go test -v -timeout=2m -cover $OPTION
+	$GOROOT/bin/go test -v -timeout=2m -race -cover -coverpkg=$COVERPKG $OPTION
 else
-	go test -v -timeout=22m -cover -coverprofile=size_coverage.out $OPTION && go tool cover -html=size_coverage.out -o $OUT && rm -f size_coverage.out
+	$GOROOT/bin/go test -v -timeout=2m -race -cover -coverpkg=$COVERPKG -coverprofile=coverage.txt $OPTION && go tool cover -html=coverage.txt -o $OUT 
 fi
 rm -f *_test.go

@@ -83,7 +83,7 @@ type converter struct {
 //
 // 如果传入的目标类型是数组、map、结构体，会使用json反序列化设置对象。
 func Set(i interface{}, key string, val interface{}) error {
-	return SetWithTags(i, key, val, DefaultConvertTags)
+	return SetWithTags(i, key, val, DefaultGetSetTags)
 }
 
 // SetWithTags 函数和Set函数相同，可以额外设置tags。
@@ -209,8 +209,8 @@ func (s *getSeter) setMap(iValue reflect.Value) error {
 }
 
 func (s *getSeter) setArray(iValue reflect.Value) error {
-	index := GetStringDefaultInt(s.keys[0], -1)
-	if index < 0 || index >= iValue.Len() {
+	index, err := strconv.Atoi(s.keys[0])
+	if err != nil || index < 0 || index >= iValue.Len() {
 		return fmt.Errorf(ErrFormatConverterSetArrayIndexInvalid, s.keys[0], iValue.Len())
 	}
 	s.keys = s.keys[1:]
@@ -226,8 +226,11 @@ func (s *getSeter) setSlice(iValue reflect.Value) error {
 	}
 	// 创建新元素的类型和值
 	newValue := reflect.New(iType.Elem()).Elem()
-	index := GetStringDefaultInt(s.keys[0], -1)
-	if index != -1 {
+	index, err := strconv.Atoi(s.keys[0])
+	if err != nil {
+		index = -1
+	}
+	if index > -1 {
 		// 新建数组替换原数组扩容
 		if iValue.Cap() <= index {
 			iValue.Set(reflect.AppendSlice(reflect.MakeSlice(iType, 0, index+1), iValue))
@@ -241,12 +244,12 @@ func (s *getSeter) setSlice(iValue reflect.Value) error {
 	}
 
 	s.keys = s.keys[1:]
-	err := s.setValue(newValue)
+	err = s.setValue(newValue)
 	if err == nil {
-		if index == -1 {
-			iValue.Set(reflect.Append(iValue, newValue))
-		} else {
+		if index > -1 {
 			iValue.Index(index).Set(newValue)
+		} else {
+			iValue.Set(reflect.Append(iValue, newValue))
 		}
 	}
 	return err
@@ -268,7 +271,7 @@ func (s *getSeter) setSlice(iValue reflect.Value) error {
 //
 // 如果匹配失败直接返回空值。
 func Get(i interface{}, key string) (val interface{}) {
-	val, _ = GetWithTags(i, key, DefaultConvertTags)
+	val, _ = GetWithTags(i, key, DefaultGetSetTags)
 	return
 }
 
@@ -355,8 +358,8 @@ func (s *getSeter) getSlice(iValue reflect.Value) interface{} {
 		return nil
 	}
 	// 检测索引是否存在
-	index := GetStringDefaultInt(s.keys[0], -1)
-	if index < 0 || iValue.Len() <= index {
+	index, err := strconv.Atoi(s.keys[0])
+	if err != nil || index < 0 || iValue.Len() <= index {
 		return nil
 	}
 	s.keys = s.keys[1:]
@@ -805,15 +808,7 @@ func setWithValueData(sValue reflect.Value, tValue reflect.Value) error {
 	case sType.Kind() == reflect.String:
 		return setWithString(tValue, sValue.String())
 	case tType.Kind() == reflect.String:
-		if sValue.Kind() == reflect.Slice {
-			skind := sType.Elem().Kind()
-			switch skind {
-			case reflect.Uint8, reflect.Int32:
-				tValue.Set(sValue.Convert(tType))
-				return nil
-			}
-		}
-		tValue.SetString(fmt.Sprintf("%#v", sValue.Interface()))
+		tValue.SetString(getWithValueString(sType, sValue))
 		return nil
 	case sType.ConvertibleTo(tType):
 		tValue.Set(sValue.Convert(tType))
@@ -825,6 +820,20 @@ func setWithValueData(sValue reflect.Value, tValue reflect.Value) error {
 		}
 	}
 	return fmt.Errorf(ErrFormatConverterSetWithValue, sValue.Type().String(), tValue.Type().String())
+}
+
+func getWithValueString(t reflect.Type, v reflect.Value) string {
+	if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
+		switch t.Elem().Kind() {
+		case reflect.String:
+			if v.Len() > 0 {
+				return v.Index(0).String()
+			}
+		case reflect.Uint8, reflect.Int32:
+			return v.Convert(typeString).String()
+		}
+	}
+	return fmt.Sprintf("%#v", v.Interface())
 }
 
 // 将一个字符串赋值给对象

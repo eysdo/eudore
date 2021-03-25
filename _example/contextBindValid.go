@@ -22,7 +22,7 @@ func main() {
 	app.PutFunc("/file/data/:path valid=1", func(ctx eudore.Context) {
 		var user userRequest
 		ctx.Bind(&user)
-		ctx.RenderWith(&user, eudore.RenderIndentJSON)
+		ctx.RenderWith(&user, eudore.RenderJSON)
 	})
 
 	app.PutFunc("/file/data/1", func(ctx eudore.Context) error {
@@ -35,17 +35,20 @@ func main() {
 		if err != nil {
 			return err
 		}
-		ctx.RenderWith(&user, eudore.RenderIndentJSON)
+		ctx.RenderWith(&user, eudore.RenderJSON)
 		return nil
 	})
 
 	client := httptest.NewClient(app)
 	client.NewRequest("PUT", "/file/data/1").WithHeaderValue("Content-Type", "application/json").WithBodyString(`{"username":"abc","name":"eudore","age":21,"password":"12345678"}`).Do().CheckStatus(200).Out()
+	client.NewRequest("PUT", "/file/data/1").WithHeaderValue("Content-Type", "application/json").WithBodyString(`{"username":"abc","name":"","age":21,"password":"12345"}`).Do().CheckStatus(200).Out()
 	client.NewRequest("PUT", "/file/data/2").WithHeaderValue("Content-Type", "application/json").WithBodyString(`{"username":"abc","name":"","age":21,"password":"12345"}`).Do().CheckStatus(200).Out()
-	for client.Next() {
-		app.Error(client.Error())
-	}
 
-	app.CancelFunc()
+	// 设置Binder强制校验
+	app.Binder = eudore.NewBinderValidater(app.Binder)
+	client.NewRequest("PUT", "/file/data/1").WithHeaderValue("Content-Type", "application/json").WithBodyString(`{"username":"abc","name":"","age":21,"password":"12345"}`).Do().CheckStatus(200).Out()
+
+	app.Listen(":8088")
+	// app.CancelFunc()
 	app.Run()
 }

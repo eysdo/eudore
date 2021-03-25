@@ -3,26 +3,12 @@ package eudore
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 )
-
-// Stream 定义请求流，抽象websocket处理。
-type Stream interface {
-	StreamID() string
-	GetType() int
-	SetType(int)
-	SendMsg(interface{}) error
-	RecvMsg(interface{}) error
-	io.ReadWriteCloser
-}
-
-// RequestReader 对象为请求信息的载体。
-type RequestReader = http.Request
 
 // ResponseWriter 接口用于写入http请求响应体status、header、body。
 //
@@ -42,8 +28,8 @@ type ResponseWriter interface {
 	Status() int
 }
 
-// ResponseWriterHTTP 是对net/http.ResponseWriter接口封装
-type ResponseWriterHTTP struct {
+// responseWriterHTTP 是对net/http.ResponseWriter接口封装
+type responseWriterHTTP struct {
 	http.ResponseWriter
 	code int
 	size int
@@ -58,30 +44,34 @@ type Cookie struct {
 	Value string
 }
 
-// Params 定义请求上下文中的参数接口。
-type Params interface {
-	Get(string) string
-	Add(string, string)
-	Set(string, string)
-}
-
-// ParamsArray 使用数组实现Params
-type ParamsArray struct {
+// Params 定义用于保存一些键值数据。
+type Params struct {
 	Keys []string
 	Vals []string
 }
 
-var (
-	responseWriterHTTPPool = sync.Pool{
-		New: func() interface{} {
-			return &ResponseWriterHTTP{}
-		},
+// NewParamsRoute 方法根据一个路由路径创建Params，支持路由路径块模式。
+func NewParamsRoute(path string) *Params {
+	route := getRoutePath(path)
+	args := strings.Split(path[len(route):], " ")
+	if args[0] == "" {
+		args = args[1:]
 	}
-)
+	params := &Params{
+		Keys: make([]string, len(args)+1),
+		Vals: make([]string, len(args)+1),
+	}
+	params.Keys[0] = ParamRoute
+	params.Vals[0] = route
+	for i, str := range args {
+		params.Keys[i+1], params.Vals[i+1] = split2byte(str, '=')
+	}
+	return params
+}
 
 // Clone 方法深复制一个ParamArray对象。
-func (p *ParamsArray) Clone() *ParamsArray {
-	params := &ParamsArray{
+func (p *Params) Clone() *Params {
+	params := &Params{
 		Keys: make([]string, len(p.Keys)),
 		Vals: make([]string, len(p.Vals)),
 	}
@@ -90,7 +80,15 @@ func (p *ParamsArray) Clone() *ParamsArray {
 	return params
 }
 
-func (p *ParamsArray) String() string {
+// Combine 方法将params数据合并到p。
+func (p *Params) Combine(params *Params) {
+	for i := range params.Keys {
+		p.Add(params.Keys[i], params.Vals[i])
+	}
+}
+
+// String 方法输出Params成字符串。
+func (p *Params) String() string {
 	var b bytes.Buffer
 	for i := range p.Keys {
 		if p.Keys[i] != "" && p.Vals[i] != "" {
@@ -103,8 +101,19 @@ func (p *ParamsArray) String() string {
 	return b.String()
 }
 
+// MarshalJSON 方法设置Params json序列化显示的数据。
+func (p *Params) MarshalJSON() ([]byte, error) {
+	data := make(map[string]string, len(p.Keys))
+	for i := range p.Keys {
+		if val := p.Vals[i]; val != "" {
+			data[p.Keys[i]] = val
+		}
+	}
+	return json.Marshal(data)
+}
+
 // Get 方法返回一个参数的值。
-func (p *ParamsArray) Get(key string) string {
+func (p *Params) Get(key string) string {
 	for i, str := range p.Keys {
 		if str == key {
 			return p.Vals[i]
@@ -114,7 +123,7 @@ func (p *ParamsArray) Get(key string) string {
 }
 
 // Add 方法添加一个参数。
-func (p *ParamsArray) Add(key string, val string) {
+func (p *Params) Add(key string, val string) {
 	if key != "" {
 		p.Keys = append(p.Keys, key)
 		p.Vals = append(p.Vals, val)
@@ -122,7 +131,7 @@ func (p *ParamsArray) Add(key string, val string) {
 }
 
 // Set 方法设置一个参数的值。
-func (p *ParamsArray) Set(key string, val string) {
+func (p *Params) Set(key string, val string) {
 	for i, str := range p.Keys {
 		if str == key {
 			p.Vals[i] = val
@@ -132,41 +141,50 @@ func (p *ParamsArray) Set(key string, val string) {
 	p.Add(key, val)
 }
 
-// Reset 方法重置ResponseWriterHTTP对象。
-func (w *ResponseWriterHTTP) Reset(writer http.ResponseWriter) {
+// Del 方法删除一个参数值
+func (p *Params) Del(key string) {
+	for i, str := range p.Keys {
+		if str == key {
+			p.Vals[i] = ""
+		}
+	}
+}
+
+// Reset 方法重置responseWriterHTTP对象。
+func (w *responseWriterHTTP) Reset(writer http.ResponseWriter) {
 	w.ResponseWriter = writer
 	w.code = http.StatusOK
 	w.size = 0
 }
 
 // Write 方法实现io.Writer接口。
-func (w *ResponseWriterHTTP) Write(data []byte) (int, error) {
+func (w *responseWriterHTTP) Write(data []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(data)
 	w.size = w.size + n
 	return n, err
 }
 
 // WriteHeader 方法实现写入http请求状态码。
-func (w *ResponseWriterHTTP) WriteHeader(codeCode int) {
+func (w *responseWriterHTTP) WriteHeader(codeCode int) {
 	w.code = codeCode
 	w.ResponseWriter.WriteHeader(w.code)
 }
 
 // Flush 方法实现刷新缓冲，将缓冲的请求发送给客户端。
-func (w *ResponseWriterHTTP) Flush() {
+func (w *responseWriterHTTP) Flush() {
 	w.ResponseWriter.(http.Flusher).Flush()
 }
 
 // Hijack 方法实现劫持http连接。
-func (w *ResponseWriterHTTP) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+func (w *responseWriterHTTP) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if hj, ok := w.ResponseWriter.(http.Hijacker); ok {
 		return hj.Hijack()
 	}
 	return nil, nil, ErrResponseWriterHTTPNotHijacker
 }
 
-// Push 方法实现http Psuh，如果ResponseWriterHTTP实现http.Push接口，则Push资源。
-func (w *ResponseWriterHTTP) Push(target string, opts *http.PushOptions) error {
+// Push 方法实现http Psuh，如果responseWriterHTTP实现http.Push接口，则Push资源。
+func (w *responseWriterHTTP) Push(target string, opts *http.PushOptions) error {
 	if pusher, ok := w.ResponseWriter.(http.Pusher); ok {
 		return pusher.Push(target, opts)
 	}
@@ -174,12 +192,12 @@ func (w *ResponseWriterHTTP) Push(target string, opts *http.PushOptions) error {
 }
 
 // Size 方法获得写入的数据长度。
-func (w *ResponseWriterHTTP) Size() int {
+func (w *responseWriterHTTP) Size() int {
 	return w.size
 }
 
 // Status 方法获得设置的http状态码。
-func (w *ResponseWriterHTTP) Status() int {
+func (w *responseWriterHTTP) Status() int {
 	return w.code
 }
 
@@ -213,81 +231,14 @@ func isNotToken(r rune) bool {
 }
 
 var isTokenTable = [127]bool{
-	'!':  true,
-	'#':  true,
-	'$':  true,
-	'%':  true,
-	'&':  true,
-	'\'': true,
-	'*':  true,
-	'+':  true,
-	'-':  true,
-	'.':  true,
-	'0':  true,
-	'1':  true,
-	'2':  true,
-	'3':  true,
-	'4':  true,
-	'5':  true,
-	'6':  true,
-	'7':  true,
-	'8':  true,
-	'9':  true,
-	'A':  true,
-	'B':  true,
-	'C':  true,
-	'D':  true,
-	'E':  true,
-	'F':  true,
-	'G':  true,
-	'H':  true,
-	'I':  true,
-	'J':  true,
-	'K':  true,
-	'L':  true,
-	'M':  true,
-	'N':  true,
-	'O':  true,
-	'P':  true,
-	'Q':  true,
-	'R':  true,
-	'S':  true,
-	'T':  true,
-	'U':  true,
-	'W':  true,
-	'V':  true,
-	'X':  true,
-	'Y':  true,
-	'Z':  true,
-	'^':  true,
-	'_':  true,
-	'`':  true,
-	'a':  true,
-	'b':  true,
-	'c':  true,
-	'd':  true,
-	'e':  true,
-	'f':  true,
-	'g':  true,
-	'h':  true,
-	'i':  true,
-	'j':  true,
-	'k':  true,
-	'l':  true,
-	'm':  true,
-	'n':  true,
-	'o':  true,
-	'p':  true,
-	'q':  true,
-	'r':  true,
-	's':  true,
-	't':  true,
-	'u':  true,
-	'v':  true,
-	'w':  true,
-	'x':  true,
-	'y':  true,
-	'z':  true,
-	'|':  true,
-	'~':  true,
+	'!': true, '#': true, '$': true, '%': true, '&': true, '\'': true, '*': true, '+': true,
+	'-': true, '.': true, '0': true, '1': true, '2': true, '3': true, '4': true, '5': true,
+	'6': true, '7': true, '8': true, '9': true, 'A': true, 'B': true, 'C': true, 'D': true,
+	'E': true, 'F': true, 'G': true, 'H': true, 'I': true, 'J': true, 'K': true, 'L': true,
+	'M': true, 'N': true, 'O': true, 'P': true, 'Q': true, 'R': true, 'S': true, 'T': true,
+	'U': true, 'W': true, 'V': true, 'X': true, 'Y': true, 'Z': true, '^': true, '_': true,
+	'`': true, 'a': true, 'b': true, 'c': true, 'd': true, 'e': true, 'f': true, 'g': true,
+	'h': true, 'i': true, 'j': true, 'k': true, 'l': true, 'm': true, 'n': true, 'o': true,
+	'p': true, 'q': true, 'r': true, 's': true, 't': true, 'u': true, 'v': true, 'w': true,
+	'x': true, 'y': true, 'z': true, '|': true, '~': true,
 }

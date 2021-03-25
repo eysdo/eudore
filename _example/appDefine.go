@@ -22,7 +22,11 @@ type App struct {
 	Binder             `alias:"binder"`
 	Renderer           `alias:"renderer"`
 	Validater          `alias:"validater"`
+	GetWarp            `alias:"getwarp"`
+	HandlerFuncs       `alias:"handlerfuncs"`
 	ContextPool        sync.Pool `alias:"contextpool"`
+	CancelError        error     `alias:"cancelerror"`
+	cancelMutex        sync.Mutex
 }
 
 func main() {
@@ -43,15 +47,8 @@ type ConfigParseFunc func(Config) error
 // ConfigParseOption 定义配置解析选项，用于修改配置解析函数。
 type ConfigParseOption func([]ConfigParseFunc) []ConfigParseFunc
 
-// Logger 定义日志处理器定义
+// Logger 日志输出接口
 type Logger interface {
-	Logout
-	Sync() error
-	SetLevel(LoggerLevel)
-}
-
-// Logout 日志输出接口
-type Logout interface {
 	Debug(...interface{})
 	Info(...interface{})
 	Warning(...interface{})
@@ -62,8 +59,10 @@ type Logout interface {
 	Warningf(string, ...interface{})
 	Errorf(string, ...interface{})
 	Fatalf(string, ...interface{})
-	WithField(key string, value interface{}) Logout
-	WithFields(fields Fields) Logout
+	WithField(string, interface{}) Logger
+	WithFields([]string, []interface{}) Logger
+	Sync() error
+	SetLevel(LoggerLevel)
 }
 
 // LoggerLevel 定义日志级别
@@ -87,25 +86,13 @@ type Server interface {
 //
 // RouterCore实现路由匹配细节，RouterMethod调用RouterCore提供对外使用的方法。
 //
+// RouterMethod 路由默认直接注册的接口，设置路由参数、组路由、中间件、函数扩展、控制器等行为。
+//
 // 任何时候请不要使用RouterCore的方法直接注册路由，应该使用RouterMethod的Add...方法。
 type Router interface {
 	RouterCore
-	RouterMethod
-}
-
-// RouterCore接口，执行路由的注册和匹配一个请求并返回处理者。
-//
-// RouterCore主要实现路由匹配相关细节。
-type RouterCore interface {
-	HandleFunc(string, string, HandlerFuncs)
-	Match(string, string, Params) HandlerFuncs
-}
-
-// RouterMethod 路由默认直接注册的接口，设置路由参数、组路由、中间件、函数扩展、控制器等行为。
-type RouterMethod interface {
 	Group(string) Router
-	GetParam(string) string
-	SetParam(string, string) Router
+	Params() *Params
 	AddHandler(string, string, ...interface{}) error
 	AddController(...Controller) error
 	AddMiddleware(...interface{}) error
@@ -118,6 +105,14 @@ type RouterMethod interface {
 	HeadFunc(string, ...interface{})
 	PatchFunc(string, ...interface{})
 	OptionsFunc(string, ...interface{})
+}
+
+// RouterCore接口，执行路由的注册和匹配一个请求并返回处理者。
+//
+// RouterCore主要实现路由匹配相关细节。
+type RouterCore interface {
+	HandleFunc(string, string, HandlerFuncs)
+	Match(string, string, Params) HandlerFuncs
 }
 
 // Controller 定义控制器必要的接口。
@@ -162,17 +157,19 @@ type HandlerExtender interface {
 // Context 定义请求上下文接口。
 type Context interface {
 	// context
-	Reset(context.Context, ResponseWriter, *RequestReader)
-	Context() context.Context
-	Request() *RequestReader
-	Response() ResponseWriter
+	Reset(context.Context, http.ResponseWriter, *http.Request)
+	GetContext() context.Context
 	WithContext(context.Context)
-	SetRequest(*RequestReader)
+	Request() *http.Request
+	Response() ResponseWriter
+	Logger() Logger
+	SetRequest(*http.Request)
 	SetResponse(ResponseWriter)
+	SetLogger(Logger)
 	SetHandler(int, HandlerFuncs)
+	GetHandler() (int, HandlerFuncs)
 	Next()
 	End()
-	Done() <-chan struct{}
 	Err() error
 
 	// request info
@@ -188,19 +185,20 @@ type Context interface {
 	Body() []byte
 	Bind(interface{}) error
 	BindWith(interface{}, Binder) error
+	Validate(interface{}) error
 
 	// param query header cookie session
-	Params() Params
+	Params() *Params
 	GetParam(string) string
 	SetParam(string, string)
 	AddParam(string, string)
 	Querys() url.Values
 	GetQuery(string) string
-	GetHeader(name string) string
+	GetHeader(string) string
 	SetHeader(string, string)
 	Cookies() []Cookie
-	GetCookie(name string) string
-	SetCookie(cookie *SetCookie)
+	GetCookie(string) string
+	SetCookie(*SetCookie)
 	SetCookieValue(string, string, int)
 	FormValue(string) string
 	FormValues() map[string][]string
@@ -214,12 +212,11 @@ type Context interface {
 	Push(string, *http.PushOptions) error
 	Render(interface{}) error
 	RenderWith(interface{}, Renderer) error
-	// render writer
 	WriteString(string) error
 	WriteJSON(interface{}) error
 	WriteFile(string) error
 
-	// log Logout interface
+	// log Logger interface
 	Debug(...interface{})
 	Info(...interface{})
 	Warning(...interface{})
@@ -230,13 +227,9 @@ type Context interface {
 	Warningf(string, ...interface{})
 	Errorf(string, ...interface{})
 	Fatalf(string, ...interface{})
-	WithField(key string, value interface{}) Logout
-	WithFields(fields Fields) Logout
-	Logger() Logout
+	WithField(string, interface{}) Logger
+	WithFields([]string, []interface{}) Logger
 }
-
-// RequestReader 对象为请求信息的载体。
-type RequestReader = http.Request
 
 // ResponseWriter 接口用于写入http请求响应体status、header、body。
 //
@@ -265,9 +258,11 @@ type Cookie struct {
 	Value string
 }
 
-// Params 定义请求上下文中的参数接口。
-type Params interface {
-	Get(string) string
-	Add(string, string)
-	Set(string, string)
+// Params 定义用于保存一些键值数据。
+type Params struct {
+	Keys []string
+	Vals []string
 }
+
+// GetWarp 对象封装Get函数提供类型转换功能。
+type GetWarp func(string) interface{}

@@ -1,18 +1,23 @@
 # example
 
-本部分为演示例子目录功能导航,保存eudore、component、middleware三个实现的功能演示，eudore只有没实现的功能，没有无法实现的功能，详细文档查看[wiki文档](https://github.com/eudore/eudore/wiki)或者[源码](https://github.com/eudore/eudore)。
+本部分为演示例子目录功能导航,保存eudore、middleware、component三个库实现的功能演示，eudore只有没实现的功能，没有无法实现的功能，详细文档查看[wiki文档](https://github.com/eudore/eudore/wiki)或者[源码](https://github.com/eudore/eudore)。
 
-exmaple都默认使用httptest测试，可以注释代码`app.CancelFunc()`不终止程序并添加`app.Listen(":8088")`后使用阅览器访问，单元测试执行gotest.sh脚本。
+exmaple都默认使用[httptest](https://github.com/eudore/eudore/tree/master/component/httptest)库测试，单元测试执行gotest.sh脚本(OUT=coverage.html GOROOT=/usr/local/go1.13 bash gotest.sh),未完成单元测试覆盖的库不保证稳定性。
 
-go version go1.10.1 linux/amd64 coverage: 100.0% of statements
+go version go1.13 linux/amd64 coverage: 100.0% of statements in github.com/eudore/eudore, github.com/eudore/eudore/middleware, github.com/eudore/eudore/component/ram, github.com/eudore/eudore/component/httptest
+
 
 - Application
-	- [New](appCore.go)
-	- [后台启动](appEudoreDaemon.go)
-	- [启动命令解析](appEudoreCommand.go)
-	- [监听代码自动编译重启](appEudoreNotify.go)
+	- [New](appNew.go)
+	- [自定义app](appExtend.go)
 	- [静态文件](appStatic.go)
-	- [自定义app添加全局中间件](appExtend.go)
+	- [全局请求中间件](appMiddleware.go)
+	- [后台启动](appDaemon.go)
+	- [启动命令解析](appCommand.go)
+	- [监听代码自动编译重启](appNotify.go)
+	- [重新加载配置](appReload.go)
+	- [反向代理](appProxy.go)
+	- [隧道代理](appTunnel.go)
 - Config
 	- [解析命令行参数](configArgs.go)
 	- [解析环境变量](configEnvs.go)
@@ -20,31 +25,32 @@ go version go1.10.1 linux/amd64 coverage: 100.0% of statements
 	- [map配置](configMap.go)
 	- [map差异化配置](configMapMods.go)
 	- [eudore差异化配置](configEudoreMods.go)
-	- [配置解析选择](configOption.go)
+	- [配置解析选项](configOption.go)
 	- [读取文件配置](configReadFile.go)
 	- [读取http远程配置](configReadHttp.go)
-	- viper Config适配
 - Logger
-	- [LoggerInit](loggerInit.go)
+	- [初始化日志LoggerInit](loggerInit.go)
 	- [LoggerStd](loggerStd.go)
 	- [日志切割](loggerStdRotate.go)
 	- [日志清理](loggerStdClean.go)
 	- [写入Elastic](loggerElastic.go)
-	- logrus Logger适配
+	- [logrus Logger适配](loggerLogrus.go)
 - Server
+	- [设置超时]
 	- [服务监听](serverListen.go)
 	- [使用https](serverHttps.go)
 	- [双向https](serverMutualTLS.go)
 	- [eudore server启动服务](serverEudore.go)
-	- [ServerGrace平滑重启](serverGrace.gp)
 	- [fastcgi启动服务](serverFcgi.go)
 - Router
-	- [组路由和中间件](routerGroupAndMiddleware.go)
+	- [组路由](routerGroup.go)
+	- [组路由和中间件](routerMiddleware.go)
 	- [路由参数](routerParams.go)
 	- [Any方法注册](routerAny.go)
-	- [Raidx路由器](routerRadix.go)
-	- [Full路由器](routerFull.go)
+	- [Std路由器](routerStd.go)
 	- [Host路由器](routerHost.go)
+	- [路由器注册调试](routerDebug.go)
+	- [路由器注册移除](routerDelete.go)
 	- [radix树](radixtree.go)
 - Context
 	- [Request Info](contextRequestInfo.go)
@@ -58,13 +64,14 @@ go version go1.10.1 linux/amd64 coverage: 100.0% of statements
 	- [Query url参数](contextQuerys.go)
 	- [Header](contextHeader.go)
 	- [Cookie](contextCookie.go)
-	- [Params](contexParams.go)
-	- [Form](contexForm.go)
+	- [Params](contextParams.go)
+	- [Form](contextForm.go)
 	- [Redirect](contextRedirect.go)
 	- [Push](contextPush.go)
 	- [Render](contextRender.go)
 	- [Send Json](contextRenderJson.go)
 	- [Send Template](contextRenderTemplate.go)
+	- [设置额外数据](contextValue.go)
 - Context处理扩展
 	- [默认处理](handlerDefault.go)
 	- [处理ContextData扩展](handlerContextData.go)
@@ -78,36 +85,57 @@ go version go1.10.1 linux/amd64 coverage: 100.0% of statements
 	- [使用jwt](handlerJwt.go)
 - Controller
 	- [基础控制器](controllerBase.go)
+	- [路由控制器](controllerAutoRoute.go)
 	- [单例控制器](controllerSingleton.go)
 	- [视图控制器](controllerView.go)
 	- [控制器组合路由](controllerComposeRoute.go)
 	- [控制器组合方法](controllerComposeMethod.go	)
 	- [控制器自定义参数](controllerParams.go)
 	- [控制器只读属性](controllerReadFields.go)
+	- [Gorm控制器](controllerGorm.go)
 	- Controller Handler扩展
-- Middlewar
+- Middleware
+	- [中间件管理后台](middlewareAdmin.go)
 	- [自定义中间件处理函数](middlewareHandle.go)
 	- [熔断器及管理后台](middlewareBreaker.go)
 	- [BasicAuth](middlewareBasicAuth.go)
+	- [数据缓存](middlewareCache.go)
+	- [数据缓存自定义存储](middlewareCacheStore.go)
 	- [CORS跨域资源共享](middlewareCors.go)
 	- [gzip压缩](middlewareGzip.go)
-	- [限流](middlewareRate.go)
-	- [异常捕捉](middlewareRevover.go)
+	- [限流](middlewareRateRequest.go)
+	- [限速](middlewareRateSpeed.go)
+	- [异常捕捉](middlewareRecover.go)
 	- [请求超时](middlewareTimeout.go)
 	- [访问日志](middlewareLogger.go)
+	- [黑名单](middlewareBlack.go)
+	- [路径重写](middlewareRewrite.go)
+	- [Referer检查](middlewareReferer.go)
+	- [RequestID](middlewareRequestID.go)
+	- [CSRF](middlewareCsrf.go)
+	- [Router匹配](middlewareRouter.go)
+	- [Router方法实现Rewrite](middlewareRouterRewrite.go)
+	- [ContextWarp](middlewareContextWarp.go)
+	- [请求设置独立的日志级别](middlewareLoggerLevel.go)
+	- [pprof](middlewarePprof.go)
+	- [运行时对象数据显示](middlewareLook.go)
 - Ram
 	- [Acl权限控制](ramAcl.go)
 	- [Rbac权限控制](ramRbac.go)
 	- [Pbac权限控制](ramPbacl.go)
+	- [自定义pbac条件](ramPbaclCondition.go)
 	- [混合权限控制](ramAll.go)
 	- [自定义ram处理请求](ramHandle.go)
 	- [控制器生成action参数](ramControllerAction.go)
-	- casbin处理逻辑
+- Httptest
+	- [发送请求](httptestRequest.go)
+	- [构造多种body](httptestBody.go)
+	- [使用cookie](httptestCookies.go)
+	- [测试websocket](httptestWebsocket.go)
 - Session
 	- [gorilla session](sessionGorilla.go)
 	- [beego session](sessionBeego.go)
 - Websocket
-	- [使用websocket Stream](websocketStream.go)
 	- [使用github.com/gobwas/ws库](websocketGobwas.go)
 	- [使用github.com/gorilla/websocket库](websocketGorilla.go)
 - tool
@@ -116,10 +144,11 @@ go version go1.10.1 linux/amd64 coverage: 100.0% of statements
 	- [基于路径读写对象](toolGetSet.go)
 	- [结构体和变量校验](toolValidate.go)
 - 组件
-	- [httptest组件](componentHttpTest.go)
-	- [pprof](componentPprof.go)
-	- [http代理实现](componentProxy.go)
-	- [运行时对象数据显示](componentLook.go)
 	- 生成对象帮助信息
 	- SRI值自动设置
 	- 自动http2 push
+- net/http
+	- [中间件 黑名单](nethttpBlack.go)
+	- [中间件 路径重写](nethttpRewrite.go)
+	- [中间件 BasicAuth](nethttpBasicAuth.go)
+	- [中间件 限流](nethttpRateRequest.go)

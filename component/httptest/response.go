@@ -3,11 +3,14 @@ package httptest
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 type (
@@ -17,6 +20,7 @@ type (
 		Client  *Client
 		Request *RequestReaderTest
 
+		sync.WaitGroup
 		// Code is the HTTP response code set by WriteHeader.
 		//
 		// Note that if a Handler never calls WriteHeader or Write,
@@ -49,17 +53,13 @@ type (
 // NewResponseWriterTest 方法返回一个测试使用的响应写入对象*ResponseWriterTest。
 func NewResponseWriterTest(client *Client, req *RequestReaderTest) *ResponseWriterTest {
 	return &ResponseWriterTest{
-		Client:    client,
-		Request:   req,
-		HeaderMap: make(http.Header),
-		Body:      new(bytes.Buffer),
-		Code:      200,
+		Client:  client,
+		Request: req,
+		// HeaderMap: make(http.Header),
+		Body: new(bytes.Buffer),
+		Code: 200,
 	}
 }
-
-// DefaultRemoteAddr is the default remote address to return in RemoteAddr if
-// an explicit DefaultRemoteAddr isn't set on ResponseWriterTest.
-const DefaultRemoteAddr = "1.2.3.4"
 
 // Header returns the response headers.
 func (rw *ResponseWriterTest) Header() http.Header {
@@ -78,42 +78,28 @@ func (rw *ResponseWriterTest) Header() http.Header {
 // We pass both to avoid unnecessarily generate garbage
 // in rw.WriteString which was created for performance reasons.
 // Non-nil bytes win.
-func (rw *ResponseWriterTest) writeHeader(b []byte, str string) {
+func (rw *ResponseWriterTest) writeHeader(b []byte) {
 	if rw.wroteHeader {
 		return
 	}
-	if len(str) > 512 {
-		str = str[:512]
-	}
 
 	m := rw.Header()
-
 	hasType := m.Get("Content-Type") != ""
 	hasTE := m.Get("Transfer-Encoding") != ""
 	if !hasType && !hasTE {
-		if b == nil {
-			b = []byte(str)
+		if b != nil {
+			m.Set("Content-Type", http.DetectContentType(b))
 		}
-		m.Set("Content-Type", http.DetectContentType(b))
 	}
 }
 
 // Write always succeeds and writes to rw.Body, if not nil.
 func (rw *ResponseWriterTest) Write(buf []byte) (int, error) {
-	rw.writeHeader(buf, "")
+	rw.writeHeader(buf)
 	if rw.Body != nil {
 		rw.Body.Write(buf)
 	}
 	return len(buf), nil
-}
-
-// WriteString always succeeds and writes to rw.Body, if not nil.
-func (rw *ResponseWriterTest) WriteString(str string) (int, error) {
-	rw.writeHeader(nil, str)
-	if rw.Body != nil {
-		rw.Body.WriteString(str)
-	}
-	return len(str), nil
 }
 
 // WriteHeader sets rw.Code. After it is called, changing rw.Header
@@ -150,30 +136,24 @@ func (rw *ResponseWriterTest) Flush() {
 
 // Hijack 方法返回劫持的连接。
 func (rw *ResponseWriterTest) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if rw.Request.websocketServer != nil {
+	if rw.Request.websocketHandle != nil {
+		serverConn, clientConn := net.Pipe()
+		rw.Add(1)
 		go func() {
-			resp, err := http.ReadResponse(bufio.NewReader(rw.Request.websocketClient), rw.Request.Request)
+			resp, err := http.ReadResponse(bufio.NewReader(clientConn), rw.Request.Request)
 			if err != nil {
-				rw.Request.websocketClient.Close()
-				rw.Request.Error(err)
+				clientConn.Close()
+				rw.Client.Print(err)
+				rw.Done()
 				return
 			}
 			rw.HandleRespone(resp)
-			rw.Request.websocketHandle(rw.Request.websocketClient)
+			rw.Done()
+			rw.Request.websocketHandle(clientConn)
 		}()
-		return rw.Request.websocketServer, bufio.NewReadWriter(bufio.NewReader(rw.Request.websocketServer), bufio.NewWriter(rw.Request.websocketServer)), nil
+		return serverConn, bufio.NewReadWriter(bufio.NewReader(serverConn), bufio.NewWriter(serverConn)), nil
 	}
 	return nil, nil, ErrResponseWriterTestNotSupportHijack
-}
-
-// Size 方法返回写入的body的长度。
-func (rw *ResponseWriterTest) Size() int {
-	return rw.Body.Len()
-}
-
-// Status 方法返回响应状态码。
-func (rw *ResponseWriterTest) Status() int {
-	return rw.Code
 }
 
 // HandleRespone 方法处理一个http.Response对象数据。
@@ -182,9 +162,10 @@ func (rw *ResponseWriterTest) HandleRespone(resp *http.Response) *ResponseWriter
 	rw.HeaderMap = resp.Header
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		rw.Request.Error(err)
+		rw.Client.Print(err)
 		return rw
 	}
+	resp.Body.Close()
 	rw.Body = bytes.NewBuffer(body)
 	return rw
 }
@@ -196,7 +177,7 @@ func (rw *ResponseWriterTest) CheckStatus(status ...int) *ResponseWriterTest {
 			return rw
 		}
 	}
-	rw.Request.Errorf("CheckStatus response status is invalid %d,check status: %v", rw.Code, status)
+	rw.Client.Printf("CheckStatus response status is invalid %d,check status: %v", rw.Code, status)
 	return rw
 }
 
@@ -204,18 +185,29 @@ func (rw *ResponseWriterTest) CheckStatus(status ...int) *ResponseWriterTest {
 func (rw *ResponseWriterTest) CheckHeader(h ...string) *ResponseWriterTest {
 	for i := 0; i < len(h)/2; i++ {
 		if rw.HeaderMap.Get(h[i]) != h[i+1] {
-			rw.Request.Errorf("CheckHeader response header %s value is %s,not is %s", h[i], rw.HeaderMap.Get(h[i]), h[i+1])
+			rw.Client.Printf("CheckHeader response header %s value is %s,not is %s", h[i], rw.HeaderMap.Get(h[i]), h[i+1])
 		}
 	}
 	return rw
 }
 
+func (rw *ResponseWriterTest) getBodyString() string {
+	if rw.HeaderMap.Get("Content-Encoding") == "gzip" {
+		r, err := gzip.NewReader(rw.Body)
+		if err == nil {
+			body, _ := ioutil.ReadAll(r)
+			return string(body)
+		}
+	}
+	return rw.Body.String()
+}
+
 // CheckBodyContainString 方法检查响应的字符串body是否包含指定多个字符串。
 func (rw *ResponseWriterTest) CheckBodyContainString(strs ...string) *ResponseWriterTest {
-	body := rw.Body.String()
+	body := rw.getBodyString()
 	for _, str := range strs {
 		if !strings.Contains(body, str) {
-			rw.Request.Errorf("CheckBodyContainString response body not contains string: %s", str)
+			rw.Client.Printf("CheckBodyContainString response body not contains string: %s", str)
 		}
 	}
 	return rw
@@ -223,14 +215,24 @@ func (rw *ResponseWriterTest) CheckBodyContainString(strs ...string) *ResponseWr
 
 // CheckBodyString 方法检查body是否为指定字符串。
 func (rw *ResponseWriterTest) CheckBodyString(s string) *ResponseWriterTest {
-	if s != rw.Body.String() {
-		rw.Request.Errorf("CheckBodyString response body size %d not is check string", rw.Body.Len())
+	if s != rw.getBodyString() {
+		rw.Client.Printf("CheckBodyString response body size %d not is check string", rw.Body.Len())
 	}
 	return rw
 }
 
 // CheckBodyJSON 方法检查body是否是指定对象的json， 未实现。
 func (rw *ResponseWriterTest) CheckBodyJSON(data interface{}) *ResponseWriterTest {
+	jsonbody, err := json.Marshal(data)
+	if err != nil {
+		rw.Client.Printf("CheckBodyJSON json marshal err: %s", err.Error())
+		return rw
+	}
+	jsonbody = append(jsonbody, '\n')
+	if bytes.Equal(jsonbody, rw.Body.Bytes()) {
+		return rw
+	}
+	rw.Client.Printf("CheckBodyJSON not equal")
 	return rw
 }
 
@@ -241,8 +243,8 @@ func (rw *ResponseWriterTest) Out() *ResponseWriterTest {
 	for k, v := range rw.HeaderMap {
 		b.WriteString(fmt.Sprintf("\n%s: %s", k, v))
 	}
-	b.WriteString("\n\n" + rw.Body.String())
-	rw.Client.Println(b.String())
+	b.WriteString("\n\n" + rw.getBodyString())
+	rw.Client.Print(b.String())
 	return rw
 }
 
@@ -259,12 +261,12 @@ func (rw *ResponseWriterTest) OutHeader() *ResponseWriterTest {
 	for k, v := range rw.HeaderMap {
 		b.WriteString(fmt.Sprintf("\n%s: %s", k, v))
 	}
-	rw.Client.Println(b.String())
+	rw.Client.Print(b.String())
 	return rw
 }
 
 // OutBody 方法输出body字符串信息。
 func (rw *ResponseWriterTest) OutBody() *ResponseWriterTest {
-	rw.Client.Printf("httptest request %s %s body: %s\n", rw.Request.Method, rw.Request.RequestURI, rw.Body.String())
+	rw.Client.Printf("httptest request %s %s body: %s", rw.Request.Method, rw.Request.RequestURI, rw.getBodyString())
 	return rw
 }

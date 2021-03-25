@@ -1,13 +1,14 @@
 package eudore_test
 
 import (
-	"bou.ke/monkey"
 	"encoding/json"
 	"errors"
-	"github.com/eudore/eudore"
 	"os"
 	"runtime"
 	"testing"
+
+	"bou.ke/monkey"
+	"github.com/eudore/eudore"
 )
 
 type loggerInitHandler2 interface {
@@ -16,6 +17,19 @@ type loggerInitHandler2 interface {
 
 func TestLoggerInit2(t *testing.T) {
 	log := eudore.NewLoggerInit()
+
+	log.SetLevel(eudore.LogFatal)
+	log.Debug("0")
+	log.Debugf("0")
+	log.Info("1")
+	log.Infof("1")
+	log.Warning("2")
+	log.Warningf("2")
+	log.Error("3")
+	log.Errorf("3")
+	log.Fatal("4")
+	log.Fatalf("4")
+
 	log.SetLevel(eudore.LogInfo)
 	log.Debug("0")
 	log.Debugf("0")
@@ -39,16 +53,16 @@ func TestLoggerInit2(t *testing.T) {
 	log.WithField("key", "field").Fatal("4")
 	log.WithField("key", "field").Fatalf("4")
 
-	log.WithFields(eudore.Fields{"key": "Fields"}).Debug("0")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Debugf("0")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Info("1")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Infof("1")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Warning("2")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Warningf("2")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Error("3")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Errorf("3")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Fatal("4")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Fatalf("4")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Debug("0")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Debugf("0")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Info("1")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Infof("1")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Warning("2")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Warningf("2")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Error("3")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Errorf("3")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Fatal("4")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Fatalf("4")
 
 	// 判断是LoggerInit
 	if initlog, ok := log.(loggerInitHandler2); ok {
@@ -82,16 +96,17 @@ func TestLoggerInit2(t *testing.T) {
 	log.WithField("key", "field").Fatal("4")
 	log.WithField("key", "field").Fatalf("4")
 
-	log.WithFields(eudore.Fields{"key": "Fields"}).Debug("0")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Debugf("0")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Info("1")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Infof("1")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Warning("2")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Warningf("2")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Error("3")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Errorf("3")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Fatal("4")
-	log.WithFields(eudore.Fields{"key": "Fields"}).Fatalf("4")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Debug("0")
+	log.WithFields([]string{"key", "k2"}, []interface{}{"Fields"}).Debug("0")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Debugf("0")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Info("1")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Infof("1")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Warning("2")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Warningf("2")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Error("3")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Errorf("3")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Fatal("4")
+	log.WithFields([]string{"key"}, []interface{}{"Fields"}).Fatalf("4")
 
 	log.Sync()
 }
@@ -101,6 +116,7 @@ type (
 	marsha2 struct{}
 	marsha3 struct{}
 	marsha4 struct{}
+	marsha5 struct{ Num []int }
 )
 
 func (marsha1) MarshalJSON() ([]byte, error) {
@@ -118,6 +134,8 @@ func (marsha4) MarshalText() ([]byte, error) {
 
 func TestLoggerStd2(t *testing.T) {
 	log := eudore.NewLoggerStd(nil)
+	log.Debug("debug")
+	log.Info("info")
 	log.WithField("json", eudore.LogDebug).Debug()
 	log.WithField("stringer", eudore.HandlerFunc(eudore.HandlerEmpty)).Debug("2")
 	log.WithField("bool", true).Debug("2")
@@ -141,6 +159,7 @@ func TestLoggerStd2(t *testing.T) {
 	log.WithField("nil", new(marsha2)).Debug("marsha2")
 	log.WithField("nil", new(marsha3)).Debug("marsha3")
 	log.WithField("nil", new(marsha4)).Debug("marsha4")
+	log.WithField("nil", new(marsha5)).Debug("marsha5")
 
 	log.Sync()
 }
@@ -211,6 +230,21 @@ func TestLoggerStdOut4(t *testing.T) {
 
 func TestLoggerStdOut5(t *testing.T) {
 	defer os.RemoveAll("logger")
+
+	{
+		// 占用第一个索引文件
+		os.Mkdir("logger", 0644)
+		file, err := os.OpenFile("logger/logger-out-0.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err == nil {
+			str := []byte("eudore logger Writer test.")
+			for i := 0; i < 1024; i++ {
+				file.Write(str)
+			}
+			file.Sync()
+			file.Close()
+		}
+	}
+
 	log := eudore.NewLoggerStd(&eudore.LoggerStdConfig{
 		Std:     true,
 		Path:    "logger/logger-out-index.log",
@@ -240,7 +274,7 @@ func TestLoggerCaller5(t *testing.T) {
 	defer patch1.Unpatch()
 	defer patch2.Unpatch()
 
-	app := eudore.NewApp(eudore.NewRouterFull())
+	app := eudore.NewApp()
 	app.AddMiddleware("8888")
 	app.AnyFunc("/:path|panic", eudore.HandlerEmpty)
 	app.AnyFunc("/*", eudore.HandlerRouter404)
@@ -249,7 +283,7 @@ func TestLoggerCaller5(t *testing.T) {
 	app.Run()
 }
 
-func BenchmarkLogerStd(b *testing.B) {
+func BenchmarkLoggerStd(b *testing.B) {
 	data := map[string]interface{}{
 		"a": 1,
 		"b": 2,
@@ -259,11 +293,7 @@ func BenchmarkLogerStd(b *testing.B) {
 	})
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		log.WithFields(eudore.Fields{
-			"animal": "walrus",
-			"number": 1,
-			"size":   10,
-		}).Info("A walrus appears")
+		log.WithFields([]string{"animal", "number", "size"}, []interface{}{"walrus", 1, 10}).Info("A walrus appears")
 		log.WithField("a", 1).WithField("b", true).Info(data)
 	}
 	log.Sync()

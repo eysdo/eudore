@@ -17,23 +17,29 @@ var (
 	AppContextKey = &contextKey{"app"}
 	// DefaultBodyMaxMemory 默认Body解析占用内存。
 	DefaultBodyMaxMemory int64 = 32 << 20 // 32 MB
+	// DefaultGetSetTags 定义Get/Set函数使用的默认tag。
+	DefaultGetSetTags = []string{"alias"}
 	// DefaultConvertTags 定义默认转换使用的结构体tags。
 	DefaultConvertTags = []string{"alias"}
 	// DefaultConvertFormTags 定义bind form使用tags。
 	DefaultConvertFormTags = []string{"form", "alias"}
 	// DefaultConvertURLTags 定义bind url使用tags。
 	DefaultConvertURLTags = []string{"url", "alias"}
+	// DefaultRecoverDepth 定义GetPanicStack函数默认显示栈最大层数。
+	DefaultRecoverDepth = 20
 	// LogLevelString 定义日志级别输出字符串。
 	LogLevelString = [5]string{"DEBUG", "INFO", "WARNING", "ERROR", "FATAL"}
-	// RouterAllMethod 定义全部的方法，影响Any方法的注册。
-	RouterAllMethod = []string{MethodGet, MethodPost, MethodPut, MethodDelete, MethodHead, MethodPatch, MethodOptions}
+	// RouterAllMethod 定义路由器使用的全部方法。
+	RouterAllMethod = []string{MethodGet, MethodPost, MethodPut, MethodDelete, MethodHead, MethodPatch, MethodOptions, MethodConnect, MethodTrace}
+	// RouterAnyMethod 定义Any方法的注册使用的方法。
+	RouterAnyMethod = []string{MethodGet, MethodPost, MethodPut, MethodDelete, MethodHead, MethodPatch}
 	// ConfigAllParseFunc 定义ConfigMap和ConfigEudore默认使用的解析函数。
 	ConfigAllParseFunc = []ConfigParseFunc{ConfigParseJSON, ConfigParseArgs, ConfigParseEnvs, ConfigParseMods, ConfigParseWorkdir, ConfigParseHelp}
 	// DefaultHandlerExtend 为默认的函数扩展处理者，是RouterStd使用的最顶级的函数扩展处理者。
 	DefaultHandlerExtend = NewHandlerExtendBase()
 	// DefaultValidater 定义默认的验证器
 	DefaultValidater = NewvalidaterBase()
-	// DefaultRouterValidater 为RouterFull提供生成ValidateStringFunc功能,需要实现interface{GetValidateStringFunc(string) ValidateStringFunc}接口。
+	// DefaultRouterValidater 为RouterStd提供生成ValidateStringFunc功能,需要实现interface{GetValidateStringFunc(string) ValidateStringFunc}接口。
 	DefaultRouterValidater = DefaultValidater
 )
 
@@ -53,18 +59,21 @@ var (
 
 // 检测各类接口
 var (
-	_ Context    = (*ContextBase)(nil)
-	_ Config     = (*ConfigMap)(nil)
-	_ Config     = (*ConfigEudore)(nil)
-	_ Logger     = (*LoggerInit)(nil)
+	_ Context    = (*contextBase)(nil)
+	_ Config     = (*configMap)(nil)
+	_ Config     = (*configEudore)(nil)
+	_ Logger     = (*loggerInit)(nil)
 	_ Logger     = (*LoggerStd)(nil)
-	_ Server     = (*ServerStd)(nil)
-	_ Server     = (*ServerFcgi)(nil)
+	_ Server     = (*serverStd)(nil)
+	_ Server     = (*serverFcgi)(nil)
 	_ Router     = (*RouterStd)(nil)
-	_ RouterCore = (*RouterCoreRadix)(nil)
-	_ RouterCore = (*RouterCoreFull)(nil)
+	_ RouterCore = (*routerCoreStd)(nil)
+	_ RouterCore = (*routerCoreDebug)(nil)
+	_ RouterCore = (*routerCoreHost)(nil)
+	_ RouterCore = (*routerCoreLock)(nil)
 
-	_ ResponseWriter  = (*ResponseWriterHTTP)(nil)
+	_ ResponseWriter  = (*responseWriterHTTP)(nil)
+	_ Controller      = (*ControllerAutoRoute)(nil)
 	_ Controller      = (*ControllerBase)(nil)
 	_ Controller      = (*ControllerData)(nil)
 	_ Controller      = (*ControllerSingleton)(nil)
@@ -75,7 +84,25 @@ var (
 	_ HandlerExtender = (*handlerExtendWarp)(nil)
 	_ HandlerExtender = (*handlerExtendTree)(nil)
 	_ Validater       = (*validaterBase)(nil)
-	_ Params          = (*ParamsArray)(nil)
+)
+
+// 定义日志级别
+const (
+	LogDebug LoggerLevel = iota
+	LogInfo
+	LogWarning
+	LogError
+	LogFatal
+	_hex = "0123456789abcdef"
+)
+
+var (
+	loggerlevels = [][]byte{[]byte("DEBUG"), []byte("INFO"), []byte("WARIRNG"), []byte("ERROR"), []byte("FATAL")}
+	loggerpart1  = []byte(`{"time":"`)
+	loggerpart2  = []byte(`","level":"`)
+	loggerpart3  = []byte(`,"message":"`)
+	loggerpart4  = []byte("\"}\n")
+	loggerpart5  = []byte("}\n")
 )
 
 // 定义默认错误
@@ -99,6 +126,8 @@ var (
 
 	// ErrFormatBindDefaultNotSupportContentType BindDefault函数不支持当前的Content-Type Header。
 	ErrFormatBindDefaultNotSupportContentType = "BindDefault not support content type header: %s"
+	// ErrFormatControllerBind 执行控制器方法bind时返回错误
+	ErrFormatControllerBind = "Controller bind error: %v"
 	// ErrFormatConverterGetWithTags 在Get方法时，无法或到值，返回错误描述。
 	ErrFormatConverterGetWithTags = "Get or GetWithTags func cannot get the value of the attribute '%s', error description: %v"
 	// ErrFormatConverterNotGetValue 在Get方法时，getValue无法继续查找新的属性值。
@@ -120,10 +149,10 @@ var (
 	// ErrFormatRegisterHandlerExtendOutputParamError RegisterHandlerExtend函数注册的函数返回值错误。
 	ErrFormatRegisterHandlerExtendOutputParamError = "The '%s' output parameter is illegal and should be a HandlerFunc object"
 	// ErrFormatRouterStdAddController RouterStd控制器路由注入错误
-	ErrFormatRouterStdAddController = "The RouterStd.AddController Inject error: %v"
+	ErrFormatRouterStdAddController = "The RouterStd.AddController Inject %s error: %v"
 	// ErrFormatRouterStdAddHandlerExtend RouterStd添加扩展错误
 	ErrFormatRouterStdAddHandlerExtend = "The RouterStd.AddHandlerExtend path is '%s' RegisterHandlerExtend error: %v"
-	// ErrFormatRouterStdRegisterHandlersMethodInvalid RouterStd.registerHandlers 的添加的是无效的，全部有效方法为RouterAllMethod。
+	// ErrFormatRouterStdRegisterHandlersMethodInvalid RouterStd.registerHandlers 的添加的是无效的，全部有效方法为RouterAnyMethod。
 	ErrFormatRouterStdRegisterHandlersMethodInvalid = "The RouterStd.registerHandlers arg method '%s' is invalid, complete method: '%s', add fullpath: '%s'"
 	// ErrFormatRouterStdRegisterHandlersRecover RouterStd出现panic。
 	ErrFormatRouterStdRegisterHandlersRecover = "The RouterStd.registerHandlers arg method is '%s' and path is '%s', recover error: %v"
@@ -244,10 +273,10 @@ const (
 	HeaderContentType                     = "Content-Type"
 	HeaderCookie                          = "Cookie"
 	HeaderDate                            = "Date"
-	HeaderETag                            = "ETag"
+	HeaderETag                            = "Etag"
 	HeaderEarlyData                       = "Early-Data"
 	HeaderExpect                          = "Expect"
-	HeaderExpectCT                        = "Expect-CT"
+	HeaderExpectCT                        = "Expect-Ct"
 	HeaderExpires                         = "Expires"
 	HeaderFeaturePolicy                   = "Feature-Policy"
 	HeaderForwarded                       = "Forwarded"
@@ -278,26 +307,28 @@ const (
 	HeaderSetCookie                       = "Set-Cookie"
 	HeaderSourceMap                       = "SourceMap"
 	HeaderStrictTransportSecurity         = "Strict-Transport-Security"
-	HeaderTE                              = "TE"
+	HeaderTE                              = "Te"
 	HeaderTimingAllowOrigin               = "Timing-Allow-Origin"
 	HeaderTk                              = "Tk"
 	HeaderTrailer                         = "Trailer"
 	HeaderTransferEncoding                = "Transfer-Encoding"
+	HeaderUpgrade                         = "Upgrade"
 	HeaderUpgradeInsecureRequests         = "Upgrade-Insecure-Requests"
 	HeaderUserAgent                       = "User-Agent"
 	HeaderVary                            = "Vary"
 	HeaderVia                             = "Via"
-	HeaderWWWAuthenticate                 = "WWW-Authenticate"
+	HeaderWWWAuthenticate                 = "Www-Authenticate"
 	HeaderWarning                         = "Warning"
 	HeaderXContentTypeOptions             = "X-Content-Type-Options"
-	HeaderXDNSPrefetchControl             = "X-DNS-Prefetch-Control"
+	HeaderXCSRFToken                      = "X-Csrf-Token"
+	HeaderXDNSPrefetchControl             = "X-Dns-Prefetch-Control"
 	HeaderXForwardedFor                   = "X-Forwarded-For"
 	HeaderXForwardedHost                  = "X-Forwarded-Host"
 	HeaderXForwardedProto                 = "X-Forwarded-Proto"
 	HeaderXFrameOptions                   = "X-Frame-Options"
-	HeaderXXSSProtection                  = "X-XSS-Protection"
-	HeaderXParentID                       = "X-Parent-ID"
-	HeaderXRequestID                      = "X-Request-ID"
+	HeaderXXSSProtection                  = "X-Xss-Protection"
+	HeaderXParentID                       = "X-Parent-Id"
+	HeaderXRequestID                      = "X-Request-Id"
 
 	// 默认http请求方法
 
@@ -338,14 +369,15 @@ const (
 
 	// Param
 
-	ParamAction   = "action"
-	ParamAllKeys  = "allkeys"
-	ParamAllVals  = "allvals"
-	ParamCaller   = "caller"
-	ParamRAM      = "ram"
-	ParamTemplate = "template"
-	ParamRoute    = "route"
-	ParamDeny     = "deny"
-	ParamUID      = "UID"
-	ParamUNAME    = "UNAME"
+	ParamAction          = "action"
+	ParamAllow           = "allow"
+	ParamCaller          = "caller"
+	ParamControllerGroup = "controllergroup"
+	ParamRAM             = "ram"
+	ParamRegister        = "register"
+	ParamTemplate        = "template"
+	ParamRoute           = "route"
+	ParamDeny            = "deny"
+	ParamUID             = "UID"
+	ParamUNAME           = "UNAME"
 )

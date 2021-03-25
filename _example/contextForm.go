@@ -9,10 +9,13 @@ type Context interface {
 	FormFiles() map[string][]*multipart.FileHeader
 	...
 }
+
+如果body是url格式，使用FormValue和GetQuery获取数据。
+如果body是form格式，使用FormValue获取数据
+对于form上传文件只能使用FormFile方法获得文件。
 */
 
 import (
-	"fmt"
 	"github.com/eudore/eudore"
 	"github.com/eudore/eudore/component/httptest"
 )
@@ -20,27 +23,25 @@ import (
 func main() {
 	app := eudore.NewApp()
 	app.AnyFunc("/*path", func(ctx eudore.Context) {
+		ctx.Debug("Content-Type", ctx.GetHeader(eudore.HeaderContentType))
 		ctx.FormValue("haha")
 		ctx.FormValue("name")
 		ctx.FormFile("haha")
 		ctx.FormFile("file")
 		for key, val := range ctx.FormValues() {
-			fmt.Println(key, val)
+			ctx.Debug("get from value:", key, val)
 		}
 
 		for key, file := range ctx.FormFiles() {
-			fmt.Println(key, file[0].Filename)
+			ctx.Debug("get from file:", key, file[0].Filename)
 		}
 	})
 
 	client := httptest.NewClient(app)
-	client.NewRequest("POST", "/").WithBodyFormValue("name", "my name", "message", "msg").WithBodyFormFile("file", "contextBindForm.go", "contextBindForm file content").Do()
-	client.NewRequest("POST", "/").WithBodyJSONValue("name", "my name", "message", "msg").Do()
+	client.NewRequest("POST", "/").WithBodyFormValue("name", "my name").WithBodyFormValue("message", "msg").WithBodyFormFile("file", "contextBindForm.go", "contextBindForm file content").Do()
+	client.NewRequest("POST", "/").WithBodyJSONValue("name", "my name").WithBodyJSONValue("message", "msg").Do()
 
-	for client.Next() {
-		app.Error(client.Error())
-	}
-
-	app.CancelFunc()
+	app.Listen(":8088")
+	// app.CancelFunc()
 	app.Run()
 }

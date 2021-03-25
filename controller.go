@@ -15,6 +15,8 @@ import (
 // Data在Base基础上使用ContextData作为请求上下文，默认具有更多的方法；
 // Singleton是单例控制器，每次请求公用一个控制器；
 // View在Base基础上会使用Data和推断的模板渲染view。
+//
+// 控制器组合一个名称为xxxController，会组合获得xxx控制器的路由方法。
 type Controller interface {
 	Init(Context) error
 	Release(Context) error
@@ -57,18 +59,26 @@ type controllerPoolSingleton struct {
 	Controller
 }
 
+// virtualController 是一个空控制器用于组合实现空方法。
+type virtualController struct{}
+
 // ControllerBase 实现基本控制器。
 type ControllerBase struct {
 	Context
+	virtualController
 }
 
 // ControllerData 实现基于ContextData的控制器,基于ControllerBase扩展了额外的控制器方法。
 type ControllerData struct {
 	ContextData
+	virtualController
 }
 
 // ControllerSingleton 实现单例控制器。
-type ControllerSingleton struct{}
+type ControllerSingleton struct{ virtualController }
+
+// ControllerAutoRoute 实现根据方法注册对应的路由器方法。
+type ControllerAutoRoute struct{ virtualController }
 
 // ControllerView 基于ControllerBase额外增加了控制器自动渲染数据。
 //
@@ -82,7 +92,41 @@ type ControllerView struct {
 	Data map[string]interface{}
 }
 
-// ControllerInjectStateful 定义基本的控制器实现函数。
+type controllerError struct {
+	Error error
+	Name  string
+	virtualController
+}
+
+// NewControllerError 函数返回一个控制器错误，在控制器Inject时返回对应的错误。
+func NewControllerError(ctl Controller, err error) Controller {
+	return &controllerError{
+		Error: err,
+		Name:  getConrtrollerName(ctl),
+	}
+}
+
+// Inject 方法在注入路由规则时返回控制器错误。
+func (ctl *controllerError) Inject(Controller, Router) error {
+	return ctl.Error
+}
+
+// String 方法返回controllerError的控制器名称。
+func (ctl *controllerError) String() string {
+	return ctl.Name
+}
+
+// ControllerInjectStateful 函数执行的每次控制器会使用sync.Pool分配和回收。
+func ControllerInjectStateful(controller Controller, router Router) error {
+	return ControllerInjectWithPool(NewControllerPoolStateful(controller), controller, router)
+}
+
+// ControllerInjectSingleton 函数每次控制器会使用同一个对象执行请求，注意控制器数据线程安全。
+func ControllerInjectSingleton(controller Controller, router Router) error {
+	return ControllerInjectWithPool(NewControllerPoolSingleton(controller), controller, router)
+}
+
+// ControllerInjectWithPool 定义基本的控制器实现函数。
 //
 // 如果控制器名称为XxxxController，控制器会注册到路由组/Xxxx下，注册的方法会附加请求上下文参数'controller'，指定控制器包名称。
 //
@@ -107,9 +151,7 @@ type ControllerView struct {
 // 如果控制器具有非空和导出的Chan、Func、Interface、Map、Ptr、Slice、Array类型的成员，会知道赋值给新控制器。
 //
 // 方法类型可以调用ListExtendControllerHandlerFunc()函数查看
-//
-// 注意：ControllerInjectStateful执行的每次控制器会使用sync.Pool分配和回收。
-func ControllerInjectStateful(controller Controller, router Router) error {
+func ControllerInjectWithPool(pool ControllerPool, controller Controller, router Router) error {
 	pType := reflect.TypeOf(controller)
 	iType := reflect.TypeOf(controller).Elem()
 
@@ -126,10 +168,9 @@ func ControllerInjectStateful(controller Controller, router Router) error {
 	}
 
 	// 路由器注册控制器方法
-	pool := NewControllerPoolSync(controller)
 	for method, path := range getRoutesWithName(controller) {
 		m, ok := pType.MethodByName(method)
-		if !ok || path == "" {
+		if !ok || (!checkAllowMethod(method) && path == "") {
 			continue
 		}
 
@@ -143,20 +184,17 @@ func ControllerInjectStateful(controller Controller, router Router) error {
 	return nil
 }
 
-// ControllerInjectSingleton 方法实现注入单例控制器。
+// ControllerInjectAutoRoute 函数基于控制器规则生成路由规则，使用方法转换成处理函数支持路由器。
 //
-// 单例控制器的方法规则与ControllerInjectStateful相同。
-//
-// 如果存在路由器参数enable-route-extend，ControllerInjectSingleton函数将使用路由扩展函数，而不使用控制器扩展函数。
-func ControllerInjectSingleton(controller Controller, router Router) error {
+// 与ControllerInjectSingleton差别在于，AutoRoute使用处理函数扩展，Singletons使用控制器扩展。
+func ControllerInjectAutoRoute(controller Controller, router Router) error {
 	pType := reflect.TypeOf(controller)
-	iType := pType.Elem()
+	pValue := reflect.ValueOf(controller)
+	iType := reflect.TypeOf(controller).Elem()
 
 	// 添加控制器组。
 	cname := iType.Name()
 	cpkg := iType.PkgPath()
-	fnNewHandler := newControllerSingletionHandle(fmt.Sprintf("%s.%s", cpkg, cname), controller, router)
-	router.SetParam("enable-route-extend", "").SetParam("ignore-init", "").SetParam("ignore-release", "")
 	router = router.Group(getContrllerRouterGroup(cname, router))
 
 	// 获取路由参数函数
@@ -166,95 +204,31 @@ func ControllerInjectSingleton(controller Controller, router Router) error {
 		pfn = v.GetRouteParam
 	}
 
-	pool := NewControllerPoolSingleton(controller)
+	// 路由器注册控制器方法
 	for method, path := range getRoutesWithName(controller) {
 		m, ok := pType.MethodByName(method)
-		if !ok || path == "" {
+		if !ok || (!checkAllowMethod(method) && path == "") {
 			continue
 		}
 
-		if fnNewHandler != nil {
-			// 使用路由扩展
-			h := reflect.ValueOf(controller).Method(m.Index)
-			SetHandlerAliasName(h, fmt.Sprintf("%s.%s.%s", cpkg, cname, method))
-			router.AddHandler(getRouteMethod(method), path+" "+pfn(cpkg, cname, method), fnNewHandler(h.Interface())...)
-		} else {
-			// 使用控制器扩展
-			router.AddHandler(getRouteMethod(method), path+" "+pfn(cpkg, cname, method), ControllerFuncExtend{
-				Controller: controller,
-				Name:       fmt.Sprintf("%s.%s.%s", cpkg, cname, method),
-				Index:      m.Index,
-				Pool:       pool,
-			})
-		}
+		h := pValue.Method(m.Index)
+		SetHandlerAliasName(h, fmt.Sprintf("%s.%s.%s", cpkg, cname, method))
+		router.AddHandler(getRouteMethod(method), path+" "+pfn(cpkg, cname, method), h)
 	}
 	return nil
 }
 
-// newControllerSingletionInit 函数创建单例控制器对应的Init处理函数。
-func newControllerSingletionInit(controller Controller, name string) HandlerFunc {
-	h := func(ctx Context) {
-		err := controller.Init(ctx)
-		if err != nil {
-			ctx.Fatal(err)
-			ctx.End()
-		}
-	}
-	SetHandlerFuncName(h, name)
-	return h
-}
-
-// newControllerSingletionRelease 函数创建单例控制器对应的Release处理函数。
-func newControllerSingletionRelease(controller Controller, name string) HandlerFunc {
-	h := func(ctx Context) {
-		err := controller.Release(ctx)
-		if err != nil {
-			ctx.Fatal(err)
-		}
-	}
-	SetHandlerFuncName(h, name)
-	return h
-}
-
-func newControllerSingletionHandle(name string, controller Controller, router Router) func(interface{}) []interface{} {
-	if router.GetParam("enable-route-extend") == "" {
-		return nil
-	}
-	enableInit := router.GetParam("ignore-init") == ""
-	enableRelease := router.GetParam("ignore-release") == ""
-	var fnInit, fnRelease HandlerFunc
-	if enableInit {
-		fnInit = newControllerSingletionInit(controller, fmt.Sprintf("%s.Init", name))
-	}
-	if enableRelease {
-		fnRelease = newControllerSingletionRelease(controller, fmt.Sprintf("%s.Release", name))
-	}
-
-	return func(i interface{}) (hs []interface{}) {
-		if enableInit {
-			hs = append(hs, fnInit)
-		}
-		hs = append(hs, i)
-		if enableRelease {
-			hs = append(hs, fnRelease)
-		}
-		return
-	}
-}
-
 func getContrllerRouterGroup(name string, router Router) string {
 	switch {
-	case router.GetParam("controllergroup") != "":
-		group := router.GetParam("controllergroup")
-		router.SetParam("controllergroup", "")
+	case router.Params().Get(ParamControllerGroup) != "":
+		group := router.Params().Get(ParamControllerGroup)
+		router.Params().Del(ParamControllerGroup)
 		if group[0] == '/' {
 			return group
 		}
 		return "/" + group
-	case strings.HasSuffix(name, "Controller"):
-		return "/" + strings.ToLower(strings.TrimSuffix(name, "Controller"))
-	case strings.HasSuffix(name, "controller"):
-		return "/" + strings.ToLower(strings.TrimSuffix(name, "controller"))
+	case controllerHasSuffix(name):
+		return "/" + strings.ToLower(name[:len(name)-10])
 	default:
 		return ""
 	}
@@ -268,12 +242,15 @@ func defaultRouteParam(pkg, name, method string) string {
 // getRoutesWithName 函数获得一个控制器类型注入的全部名称和路由路径的映射。
 func getRoutesWithName(controller Controller) map[string]string {
 	iType := reflect.TypeOf(controller)
-	names := getContrllerAllowMethos(iType)
+	names := getContrllerAllMethos(iType)
 	routes := make(map[string]string, len(names))
 	for _, name := range names {
 		if name != "" {
 			routes[name] = getRouteByName(name)
 		}
+	}
+	for _, name := range getContrllerIgnoreMethos(iType) {
+		delete(routes,name)
 	}
 
 	// 如果控制器实现ControllerRoute接口，加载额外路由。
@@ -291,35 +268,8 @@ func getRoutesWithName(controller Controller) map[string]string {
 	return routes
 }
 
-// getContrllerAllowMethos 函数获得一个类型除去忽略方法意外的全部方法名称。
-//
-// 如果对象名称是Controller或controller为前缀，则忽略该对象。
-func getContrllerAllowMethos(iType reflect.Type) []string {
-	name := getValueName(iType)
-	if strings.HasPrefix(name, "Controller") || strings.HasPrefix(name, "controller") {
-		return nil
-	}
-
-	allname := getContrllerAllMethos(iType)
-	ignore := getContrllerIgnoreMethos(iType)
-	for i := 0; i < len(allname); i++ {
-		for j := 0; j < len(ignore); j++ {
-			if allname[i] == ignore[j] {
-				allname[i] = ""
-				break
-			}
-		}
-	}
-	return allname
-}
-
-// getContrllerIgnoreMethos 函数获得一个类型忽略的全部方法，如果类型名称或者类型嵌入类型名称前缀是Controller则忽略其全部方法。
 func getContrllerIgnoreMethos(iType reflect.Type) []string {
-	name := getValueName(iType)
-	var ms []string
-	if strings.HasPrefix(name, "Controller") || strings.HasPrefix(name, "controller") {
-		ms = getContrllerAllMethos(iType)
-	}
+	var allname []string
 	if iType.Kind() == reflect.Ptr {
 		iType = iType.Elem()
 	}
@@ -327,12 +277,23 @@ func getContrllerIgnoreMethos(iType reflect.Type) []string {
 		for i := 0; i < iType.NumField(); i++ {
 			// Controller为前缀的嵌入控制器。
 			// 判断嵌入属性
-			if iType.Field(i).Anonymous {
-				ms = append(ms, getContrllerIgnoreMethos(iType.Field(i).Type)...)
+			if iType.Field(i).Anonymous  {
+				var ignore []string
+				if controllerHasSuffix(getReflectTypeName(iType.Field(i).Type)) {
+					ignore = getContrllerIgnoreMethos(iType.Field(i).Type)
+				}else {
+					ignore = getContrllerAllMethos(iType.Field(i).Type)
+				}
+				allname= append(allname, ignore...)
 			}
 		}
 	}
-	return ms
+	return allname
+}
+
+// controllerHasSuffix 函数判断控制器名称后缀是否为"Controller"或"controller"。
+func controllerHasSuffix(name string) bool {
+	return strings.HasSuffix(name, "Controller") || strings.HasSuffix(name, "controller")
 }
 
 // getContrllerAllMethos 函数获得一共类型包含指针类型的全部方法名称。
@@ -347,7 +308,7 @@ func getContrllerAllMethos(iType reflect.Type) []string {
 	return names
 }
 
-func getValueName(iType reflect.Type) string {
+func getReflectTypeName(iType reflect.Type) string {
 	if iType.Kind() == reflect.Ptr {
 		iType = iType.Elem()
 	}
@@ -366,8 +327,12 @@ func getRouteByName(name string) string {
 	name = ""
 	for i := 0; i < len(names); i++ {
 		if names[i] == "By" {
-			name = name + "/:" + names[i+1]
 			i++
+			if i == len(names) {
+				name = name + "/*"
+			} else {
+				name = name + "/:" + names[i]
+			}
 		} else {
 			name = name + "/" + names[i]
 		}
@@ -393,7 +358,7 @@ func getFirstUp(name string) string {
 }
 
 func checkAllowMethod(method string) bool {
-	for _, i := range []string{"Any", "Get", "Post", "Put", "Delete", "Patch", "Options"} {
+	for _, i := range []string{"Any", "Get", "Post", "Put", "Delete", "Head", "Patch", "Options", "Connect", "Trace"} {
 		if i == method {
 			return true
 		}
@@ -415,13 +380,28 @@ func splitName(name string) (strs []string) {
 }
 
 // Init 实现控制器初始方法。
-func (ctl *ControllerBase) Init(ctx Context) error {
-	ctl.Context = ctx
+func (ctl *virtualController) Init(ctx Context) error {
 	return nil
 }
 
 // Release 实现控制器释放方法。
-func (ctl *ControllerBase) Release(Context) error {
+func (ctl *virtualController) Release(Context) error {
+	return nil
+}
+
+// ControllerRoute 方法返回默认路由信息。
+func (ctl *virtualController) ControllerRoute() map[string]string {
+	return nil
+}
+
+// GetRouteParam 方法添加路由参数信息。
+func (ctl *virtualController) GetRouteParam(pkg, name, method string) string {
+	return defaultRouteParam(pkg, name, method)
+}
+
+// Init 实现控制器初始方法。
+func (ctl *ControllerBase) Init(ctx Context) error {
+	ctl.Context = ctx
 	return nil
 }
 
@@ -430,24 +410,9 @@ func (ctl *ControllerBase) Inject(controller Controller, router Router) error {
 	return ControllerInjectStateful(controller, router)
 }
 
-// ControllerRoute 方法返回默认路由信息。
-func (ctl *ControllerBase) ControllerRoute() map[string]string {
-	return nil
-}
-
-// GetRouteParam 方法添加路由参数信息。
-func (ctl *ControllerBase) GetRouteParam(pkg, name, method string) string {
-	return defaultRouteParam(pkg, name, method)
-}
-
 // Init 实现控制器初始方法。
 func (ctl *ControllerData) Init(ctx Context) error {
 	ctl.ContextData.Context = ctx
-	return nil
-}
-
-// Release 实现控制器释放方法。
-func (ctl *ControllerData) Release(Context) error {
 	return nil
 }
 
@@ -456,39 +421,14 @@ func (ctl *ControllerData) Inject(controller Controller, router Router) error {
 	return ControllerInjectStateful(controller, router)
 }
 
-// ControllerRoute 方法返回默认路由信息。
-func (ctl *ControllerData) ControllerRoute() map[string]string {
-	return nil
-}
-
-// GetRouteParam 方法添加路由参数信息。
-func (ctl *ControllerData) GetRouteParam(pkg, name, method string) string {
-	return defaultRouteParam(pkg, name, method)
-}
-
-// Init 实现控制器初始方法,单例控制器初始化不执行任何内容。
-func (ctl *ControllerSingleton) Init(ctx Context) error {
-	return nil
-}
-
-// Release 实现控制器释放方法,单例控制器释放不执行任何内容。
-func (ctl *ControllerSingleton) Release(Context) error {
-	return nil
-}
-
 // Inject 方法实现控制器注入到路由器的方法，ControllerSingleton控制器调用ControllerInjectSingleton方法注入。
 func (ctl *ControllerSingleton) Inject(controller Controller, router Router) error {
 	return ControllerInjectSingleton(controller, router)
 }
 
-// ControllerRoute 方法返回默认路由信息。
-func (ctl *ControllerSingleton) ControllerRoute() map[string]string {
-	return nil
-}
-
-// GetRouteParam 方法添加路由参数信息。
-func (ctl *ControllerSingleton) GetRouteParam(pkg, name, method string) string {
-	return defaultRouteParam(pkg, name, method)
+// Inject 方法实现控制器注入到路由器的方法，ControllerAutoRoute控制器调用ControllerInjectAutoRoute方法注入。
+func (ctl *ControllerAutoRoute) Inject(controller Controller, router Router) error {
+	return ControllerInjectAutoRoute(controller, router)
 }
 
 // defaultGetViewTemplate 通过控制器名称和方法名称获得模板路径,如果文件不存在一般Render时会err显示路径。
@@ -497,10 +437,8 @@ func (ctl *ControllerSingleton) GetRouteParam(pkg, name, method string) string {
 //
 // MyUserController Index => views/controller/my/user/index.html
 func defaultGetViewTemplate(cname string, method string) string {
-	if strings.HasSuffix(cname, "Controller") {
-		cname = strings.TrimSuffix(cname, "Controller")
-	} else if strings.HasSuffix(cname, "controller") {
-		cname = strings.TrimSuffix(cname, "controller")
+	if controllerHasSuffix(cname) {
+		cname = cname[:len(cname)-10]
 	}
 	names := splitName(cname)
 	for i := range names {
@@ -531,11 +469,6 @@ func (ctl *ControllerView) Inject(controller Controller, router Router) error {
 	return ControllerInjectStateful(controller, router)
 }
 
-// ControllerRoute 方法返回默认路由信息。
-func (ctl *ControllerView) ControllerRoute() map[string]string {
-	return nil
-}
-
 // GetRouteParam 方法返回路由的参数，View控制器会附加模板信息。
 func (ctl *ControllerView) GetRouteParam(pkg, name, method string) string {
 	return fmt.Sprintf("controllername=%s.%s controllermethod=%s template=%s", pkg, name, method, defaultGetViewTemplate(name, method))
@@ -546,8 +479,8 @@ func (ctl *ControllerView) SetTemplate(path string) {
 	ctl.SetParam("template", path)
 }
 
-// NewControllerPoolSync 函数创建一个基于sync.Pool的控制器池。
-func NewControllerPoolSync(controler Controller) ControllerPool {
+// NewControllerPoolStateful 函数创建一个基于sync.Pool的控制器池。
+func NewControllerPoolStateful(controler Controller) ControllerPool {
 	newfn := newControllerCloneFunc(controler)
 	return &controllerPoolSync{
 		Pool: sync.Pool{
@@ -640,7 +573,7 @@ func NewExtendControllerFunc(ef ControllerFuncExtend) HandlerFunc {
 	}
 
 	index := ef.Index
-	return NewExtendController(ef.Name, ef.Pool, func(ctx Context, ctl Controller) {
+	return NewExtendController(ef.Name, ef.Pool, func(_ Context, ctl Controller) {
 		reflect.ValueOf(ctl).Method(index).Call(nil)
 	})
 }
@@ -778,7 +711,7 @@ func NewExtendControllerFuncMapString(ef ControllerFuncExtend) HandlerFunc {
 		req := make(map[string]interface{})
 		err := ctx.Bind(&req)
 		if err != nil {
-			ctx.Fatalf("controller bind error: %v", err)
+			ctx.Fatalf(ErrFormatControllerBind, err)
 			return
 		}
 		reflect.ValueOf(ctl).Method(index).Call([]reflect.Value{reflect.ValueOf(req)})
@@ -797,7 +730,7 @@ func NewExtendControllerFuncMapStringRender(ef ControllerFuncExtend) HandlerFunc
 		req := make(map[string]interface{})
 		err := ctx.Bind(&req)
 		if err != nil {
-			ctx.Fatalf("controller bind error: %v", err)
+			ctx.Fatalf(ErrFormatControllerBind, err)
 			return
 		}
 		data := reflect.ValueOf(ctl).Method(index).Call([]reflect.Value{reflect.ValueOf(req)})[0].Interface()
@@ -822,7 +755,7 @@ func NewExtendControllerFuncMapStringError(ef ControllerFuncExtend) HandlerFunc 
 		req := make(map[string]interface{})
 		err := ctx.Bind(&req)
 		if err != nil {
-			ctx.Fatalf("controller bind error: %v", err)
+			ctx.Fatalf(ErrFormatControllerBind, err)
 			return
 		}
 		ierr := reflect.ValueOf(ctl).Method(index).Call([]reflect.Value{reflect.ValueOf(req)})[0].Interface()
@@ -844,7 +777,7 @@ func NewExtendControllerFuncMapStringRenderError(ef ControllerFuncExtend) Handle
 		req := make(map[string]interface{})
 		err := ctx.Bind(&req)
 		if err != nil {
-			ctx.Fatalf("controller bind error: %v", err)
+			ctx.Fatalf(ErrFormatControllerBind, err)
 			return
 		}
 		data, err := reflect.ValueOf(ctl).Method(index).Interface().(func(map[string]interface{}) (interface{}, error))(req)

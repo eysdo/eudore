@@ -43,7 +43,7 @@ func main() {
 	app.PutFunc("/file/data/:path", func(ctx eudore.Context) {
 		var info putFileInfo
 		ctx.Bind(&info)
-		ctx.RenderWith(&info, eudore.RenderIndentJSON)
+		ctx.RenderWith(&info, eudore.RenderJSON)
 	})
 	app.PutFunc("/person/:path", func(ctx eudore.Context) {
 		var person xmlResult
@@ -86,10 +86,8 @@ func main() {
 	`).Do().CheckStatus(200).Out()
 	client.NewRequest("PUT", "/body").WithBodyString(`{"name": "eudore","type": "file", "size":720,"lastModified":1257894000}`).Do()
 	client.NewRequest("PUT", "/with").WithBodyString(`{"name": "eudore","type": "file", "size":720,"lastModified":1257894000}`).Do()
-	for client.Next() {
-		app.Error(client.Error())
-	}
 
-	app.CancelFunc()
+	app.Listen(":8088")
+	// app.CancelFunc()
 	app.Run()
 }

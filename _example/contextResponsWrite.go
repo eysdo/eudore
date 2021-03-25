@@ -46,6 +46,7 @@ func main() {
 	app := eudore.NewApp()
 	app.AnyFunc("/*", func(ctx eudore.Context) {
 		ctx.WriteHeader(201)
+		ctx.WriteHeader(202)
 		ctx.WriteString("host: " + ctx.Host())
 
 		// 等待
@@ -57,6 +58,7 @@ func main() {
 	client := httptest.NewClient(app)
 	client.NewRequest("GET", "/").Do().Out()
 
-	app.CancelFunc()
+	app.Listen(":8088")
+	// app.CancelFunc()
 	app.Run()
 }

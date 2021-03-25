@@ -2,6 +2,7 @@ package eudore_test
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -59,47 +60,47 @@ func TestHandlerReister2(t *testing.T) {
 	app.AnyFunc("/2/5", func() error {
 		return errors.New("test error")
 	})
-	app.AnyFunc("/2/6", func(eudore.Context) (interface{}, error) {
+	app.AnyFunc("/2/6", func() (interface{}, error) {
 		return "hello", nil
 	})
-	app.AnyFunc("/2/7", func(eudore.Context, map[string]interface{}) (interface{}, error) {
+	app.AnyFunc("/2/7", func(eudore.Context) (interface{}, error) {
 		return "hello", nil
+	})
+	app.AnyFunc("/2/8", func(eudore.Context) (interface{}, error) {
+		return nil, errors.New("test error")
+	})
+	app.AnyFunc("/2/9", func(eudore.Context) (interface{}, error) {
+		return "hello", nil
+	})
+	app.AnyFunc("/2/10", func(eudore.Context, map[string]interface{}) (interface{}, error) {
+		return "hello", nil
+	})
+	app.AnyFunc("/2/11", func() {
 	})
 
 	client := httptest.NewClient(app)
-	client.NewRequest("GET", "/1/1").Do()
-	client.NewRequest("GET", "/1/2").Do()
-	client.NewRequest("GET", "/1/3").Do()
-	client.NewRequest("GET", "/1/4").Do()
-	client.NewRequest("GET", "/1/8").Do()
-	client.NewRequest("GET", "/1/9").Do()
-	client.NewRequest("GET", "/1/10").Do()
-	client.NewRequest("GET", "/1/13").Do()
-	client.NewRequest("GET", "/1/14").Do()
-	client.NewRequest("GET", "/1/15").Do()
-	client.NewRequest("GET", "/2/1").Do()
-	client.NewRequest("GET", "/2/2").Do()
-	client.NewRequest("GET", "/2/3").Do()
-	client.NewRequest("GET", "/2/4").Do()
-	client.NewRequest("GET", "/2/5").Do()
-	client.NewRequest("GET", "/2/6").Do()
-	client.NewRequest("GET", "/2/7").Do()
+	for i := 1; i < 16; i++ {
+		client.NewRequest("GET", fmt.Sprintf("/1/%d", i)).Do()
+	}
+	for i := 1; i < 12; i++ {
+		client.NewRequest("GET", fmt.Sprintf("/2/%d", i)).Do()
+	}
 
 	app.Renderer = func(eudore.Context, interface{}) error {
 		return errors.New("test render error")
 	}
-	client.NewRequest("GET", "/2/2").Do()
-	client.NewRequest("GET", "/2/4").Do()
-	client.NewRequest("GET", "/2/6").Do()
-	client.NewRequest("GET", "/2/7").Do()
+
+	for i := 1; i < 12; i++ {
+		client.NewRequest("GET", fmt.Sprintf("/2/%d", i)).Do()
+	}
+
 	app.Binder = func(eudore.Context, io.Reader, interface{}) error {
 		return errors.New("test binder error")
 	}
-	client.NewRequest("GET", "/2/7").Do()
-
-	for client.Next() {
-		app.Error(client.Error())
+	for i := 1; i < 12; i++ {
+		client.NewRequest("GET", fmt.Sprintf("/2/%d", i)).Do()
 	}
+
 	app.CancelFunc()
 	app.Run()
 }
@@ -118,6 +119,7 @@ func TestHandlerList2(t *testing.T) {
 	})
 	api.AnyFunc("/user/info", "hello")
 	t.Log(strings.Join(api.(eudore.HandlerExtender).ListExtendHandlerNames(), "\n"))
+
 	app.CancelFunc()
 	app.Run()
 }
@@ -152,14 +154,13 @@ func TestHandlerRPC2(t *testing.T) {
 		return errors.New("test binder error")
 	}
 	client.NewRequest("GET", "/1/1").Do()
-	for client.Next() {
-		app.Error(client.Error())
-	}
+
 	app.CancelFunc()
 	app.Run()
 }
 
 func TestHandlerFunc2(t *testing.T) {
+	eudore.SetHandlerAliasName(new(handlerHttp1), "")
 	eudore.SetHandlerAliasName(new(handlerHttp1), "handlerHttp1-test")
 	defer func() {
 		recover()

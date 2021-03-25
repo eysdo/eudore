@@ -49,9 +49,14 @@ func (ctl *mysGroupController) Release(ctx eudore.Context) error {
 	return ctl.ControllerSingleton.Release(ctx)
 }
 
+func (ctl *mysGroupController) InfoBy() {}
+
+func (ctl *mysGroupController) Error(*mybGroupcontroller) {}
+
 func TestControllerGroup2(*testing.T) {
 	app := eudore.NewApp()
-	app.SetParam("controllergroup", "/g1").AddController(new(mybGroupcontroller))
+	app.Params().Set("controllergroup", "/g1")
+	app.AddController(new(mybGroupcontroller))
 	app.AddController(new(mybGroupcontroller))
 	app.AddController(new(mybGroupController))
 	app.AddController(new(mysGroup))
@@ -80,10 +85,10 @@ func (ctl *myexecConrtoller) Release(ctx eudore.Context) error {
 }
 
 func (ctl *myexecConrtoller) Error() error {
-	return errors.New("test error")
+	return errors.New("test error myexecConrtoller.Error")
 }
 func (ctl *myexecConrtoller) RenderError1() (interface{}, error) {
-	return "hello", errors.New("test error")
+	return "hello", errors.New("test error RenderError1")
 }
 func (ctl *myexecConrtoller) RenderError2() (interface{}, error) {
 	return "hello", nil
@@ -131,13 +136,14 @@ func TestControllerExtendExec2(*testing.T) {
 	app := eudore.NewApp()
 	app.AddController(new(eudore.ControllerBase))
 	app.AddController(new(myexecConrtoller))
-	app.SetParam("controllergroup", "name").SetParam("enable-route-extend", "0").AddController(new(mysGroupController))
+	app.Group(" controllergroup=name").AddController(new(mysGroupController))
 
 	client := httptest.NewClient(app)
 	client.NewRequest("GET", "/init").Do()
 	client.NewRequest("GET", "/release").Do()
-	client.NewRequest("GET", "/name/init").Do()
-	client.NewRequest("GET", "/name/release").Do()
+	client.NewRequest("GET", "/name/info/init").Do()
+	client.NewRequest("GET", "/name/info/release").Do()
+	client.NewRequest("GET", "/name/info").Do()
 
 	client.NewRequest("GET", "/error").Do()
 	client.NewRequest("GET", "/render/error1").Do()
@@ -178,9 +184,6 @@ func TestControllerExtendExec2(*testing.T) {
 	client.NewRequest("GET", "/map/string/render/error1").Do()
 	client.NewRequest("GET", "/map/string/render/error2").Do()
 
-	for client.Next() {
-		app.Error(client.Error())
-	}
 	app.CancelFunc()
 	app.Run()
 }

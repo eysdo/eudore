@@ -11,8 +11,11 @@ import (
 
 func main() {
 	app := eudore.NewApp()
-	app.AddController(new(myErrController))
-	app.CancelFunc()
+	app.AddController(NewMyErrController(-10))
+	app.AddController(NewMyErrController(10))
+
+	app.Listen(":8088")
+	// app.CancelFunc()
 	app.Run()
 }
 
@@ -20,12 +23,12 @@ type myErrController struct {
 	eudore.ControllerBase
 }
 
-func (*myErrController) Inject(ctl eudore.Controller, router eudore.Router) error {
-	err := eudore.ControllerInjectStateful(ctl, router)
-	if err != nil {
-		return err
+func NewMyErrController(i int) eudore.Controller {
+	ctl := new(myErrController)
+	if i < 0 {
+		return eudore.NewControllerError(ctl, errors.New("int must grate 0"))
 	}
-	return errors.New("inject test error")
+	return ctl
 }
 
 func (ctl *myErrController) Any() {

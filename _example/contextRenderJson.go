@@ -17,10 +17,22 @@ func main() {
 			"message": "hello eudore",
 		})
 	})
+	app.GetFunc("/json2", func(ctx eudore.Context) interface{} {
+		return map[string]interface{}{
+			"name":    "eudore",
+			"message": "hello eudore",
+		}
+	})
+	app.GetFunc("/json1", func(ctx eudore.Context) interface{} {
+		return "hello eudore"
+	})
 
-	client := httptest.NewClient(app)
-	client.NewRequest("GET", "/").Do().Out()
+	client := httptest.NewClient(app).AddHeaderValue(eudore.HeaderAccept, eudore.MimeApplicationJSON)
+	client.NewRequest("GET", "/").Do().OutBody()
+	client.NewRequest("GET", "/json1").Do().OutBody()
+	client.NewRequest("GET", "/json2").Do().OutBody()
 
-	app.CancelFunc()
+	app.Listen(":8088")
+	// app.CancelFunc()
 	app.Run()
 }

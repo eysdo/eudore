@@ -20,31 +20,32 @@ func main() {
 			ctx.Fatal(err)
 			return
 		}
+
+		// 取出请求上下文的Logger，否则Context在sync.Pool再次分配后可能竞态冲突。
+		log := ctx.Logger()
 		go func() {
 			defer conn.Close()
-
 			for {
 				// 读取数据
 				msg, op, err := wsutil.ReadClientData(conn)
 				if err != nil {
 					// handle error
-					ctx.Error(err)
+					log.Error(err)
 					break
 				}
-				ctx.Info(string(msg))
+				log.Info(string(msg))
 
 				// 写入数据
 				err = wsutil.WriteServerMessage(conn, op, msg)
 				if err != nil {
 					// handle error
-					ctx.Error(err)
+					log.Error(err)
 					break
 				}
 			}
 		}()
 	}))
-
 	app.Listen(":8088")
-	app.CancelFunc()
+	// app.CancelFunc()
 	app.Run()
 }

@@ -1,10 +1,7 @@
 package main
 
 /*
-RouterRadix是eudore默认路由，使用基数数算法实现。
-
-具有路由匹配优先级： 常量匹配 > 变量匹配 > 通配符匹配
-方法优先级： 具体方法 > Any方法
+路由方法优先级： 具体方法 > Any方法
 */
 
 import (
@@ -51,10 +48,8 @@ func main() {
 	client.NewRequest("GET", "/get/1").Do().CheckStatus(200).CheckBodyContainString("get").OutBody()
 	client.NewRequest("POST", "/get/2").Do().CheckStatus(200).CheckBodyContainString("post").OutBody()
 	client.NewRequest("PUT", "/get/3").Do().CheckStatus(200).CheckBodyContainString("any").OutBody()
-	for client.Next() {
-		app.Error(client.Error())
-	}
 
-	app.CancelFunc()
+	app.Listen(":8088")
+	// app.CancelFunc()
 	app.Run()
 }

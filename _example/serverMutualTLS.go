@@ -35,6 +35,11 @@ func main() {
 		Keyfile:  "server.key",
 		Certfile: "server.cer",
 	}).Listen()
+	if err == nil {
+		app.Serve(ln)
+	} else {
+		app.Error(err)
+	}
 
 	ln, err = (&eudore.ServerListenConfig{
 		Addr:      ":8088",
@@ -43,7 +48,7 @@ func main() {
 		Mutual:    true,
 		Keyfile:   "server.key",
 		Certfile:  "server.cer",
-		TrustFile: "ca.cer",
+		Trustfile: "ca.cer",
 	}).Listen()
 	if err == nil {
 		app.Serve(ln)
@@ -60,7 +65,7 @@ func main() {
 	}
 	client.NewRequest("GET", "https://localhost:8088/").Do().CheckStatus(200).Out()
 
-	app.CancelFunc()
+	// app.CancelFunc()
 	app.Run()
 }
 

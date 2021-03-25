@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	acl := ram.NewAcl()
+	acl := ram.NewACL()
 	acl.AddPermission(1, "1")
 	acl.AddPermission(2, "2")
 	acl.AddPermission(3, "3")
@@ -42,11 +42,11 @@ func main() {
 	rbac.BindRole(2, 1)
 
 	pbac := ram.NewPbac()
-	pbac.AddPolicyStringJson(1, `{"version":"1","description":"AdministratorAccess","statement":[{"effect":true,"action":["*"],"resource":["*"]}]}`)
-	pbac.AddPolicyStringJson(2, `{"version":"1","description":"Get method allow","statement":[{"effect":true,"action":["*"],"resource":["*"],"conditions":{"method":["GET"]}}]}`)
-	pbac.AddPolicyStringJson(3, `{"version":"1","description":"Get method allow","statement":[{"effect":true,"action":["3"],"resource":["*"]}]}`)
-	pbac.BindPolicy(1, 2)
-	pbac.BindPolicy(1, 3)
+	pbac.AddPolicyStringJSON(1, `{"version":"1","description":"AdministratorAccess","statement":[{"effect":true,"action":["*"],"resource":["*"]}]}`)
+	pbac.AddPolicyStringJSON(2, `{"version":"1","description":"Get method allow","statement":[{"effect":true,"action":["*"],"resource":["*"],"conditions":{"method":["GET"]}}]}`)
+	pbac.AddPolicyStringJSON(3, `{"version":"1","description":"Get method allow","statement":[{"effect":true,"action":["3"],"resource":["*"]}]}`)
+	pbac.BindPolicy(1, 1, 2)
+	pbac.BindPolicy(1, 1, 3)
 
 	app := eudore.NewApp()
 	app.AddMiddleware(middleware.NewLoggerFunc(app, "action", "ram", "route", "resource", "browser"))
@@ -68,10 +68,8 @@ func main() {
 	client.NewRequest("PUT", "/4").Do().CheckStatus(200)
 	client.NewRequest("PUT", "/5").Do().CheckStatus(200)
 	client.NewRequest("PUT", "/6").Do().CheckStatus(200)
-	for client.Next() {
-		app.Error(client.Error())
-	}
 
-	app.CancelFunc()
+	app.Listen(":8088")
+	// app.CancelFunc()
 	app.Run()
 }
